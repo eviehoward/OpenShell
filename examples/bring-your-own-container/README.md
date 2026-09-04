@@ -18,17 +18,20 @@ your local machine through port forwarding.
 
 ## Quick start
 
-### 1. Create a sandbox from the Dockerfile with port forwarding
+### 1. Build the image and create a sandbox with port forwarding
 
 ```bash
+docker build -t openshell-byoc examples/bring-your-own-container # Docker gateway
+podman build -t openshell-byoc examples/bring-your-own-container # Podman gateway
 openshell sandbox create \
-    --from examples/bring-your-own-container/Dockerfile \
+    --from openshell-byoc \
     --forward 8080 \
     -- python /sandbox/app.py
 ```
 
-The `--from` flag accepts a Dockerfile path. The CLI builds the image,
-pushes it into the cluster, and creates the sandbox in one step.
+Build the Dockerfile with the container engine used by your local gateway
+before creating the sandbox, then pass its image reference to `--from`. For a
+remote gateway, push the image to a registry that the gateway can pull from.
 
 The `--forward 8080` flag opens an SSH tunnel so `localhost:8080` on your
 machine reaches the REST API inside the sandbox.

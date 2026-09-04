@@ -144,20 +144,28 @@ openshell sandbox create \
 
 ### Custom Containers
 
-Use `--from` to create a sandbox from the base image, another pre-built sandbox name, a local directory, or a container image:
+Use `--from` to create a sandbox from the base image, another pre-built sandbox name, or a container image:
 
 ```shell
 openshell sandbox create --from base
 openshell sandbox create --from ollama
-openshell sandbox create --from ./my-sandbox-dir
 openshell sandbox create --from my-registry.example.com/my-image:latest
 ```
 
 Bare names such as `base` and `ollama` resolve to images under `ghcr.io/nvidia/openshell-community/sandboxes`. Set `OPENSHELL_COMMUNITY_REGISTRY` when you need to use an internal mirror.
 
-Local directories and Dockerfiles require a local gateway because the CLI builds
-through the local Docker daemon. Use a registry image reference for remote
-gateways.
+`--from` does not build local Dockerfiles or directories. Build and tag the
+image with the container engine used by your local gateway, then pass the
+resulting image reference:
+
+```shell
+docker build -t my-image . # Docker gateway
+podman build -t my-image . # Podman gateway
+openshell sandbox create --from my-image
+```
+
+For a remote gateway, push the image to a registry that the gateway can pull
+from and use that registry image reference.
 
 ## Reuse Workload Templates
 
