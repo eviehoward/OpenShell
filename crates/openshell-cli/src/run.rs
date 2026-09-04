@@ -39,9 +39,7 @@ use crate::tls::{TlsOptions, grpc_client, grpc_inference_client};
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use miette::{IntoDiagnostic, Result, WrapErr, miette};
-use openshell_bootstrap::{
-    GatewayMetadata, clear_last_sandbox_if_matches, get_gateway_metadata, save_last_sandbox,
-};
+use openshell_bootstrap::{clear_last_sandbox_if_matches, save_last_sandbox};
 use openshell_core::net::set_tcp_nodelay_best_effort;
 use openshell_core::proto::{
     ApproveAllDraftChunksRequest, ApproveDraftChunkRequest, ClearDraftChunksRequest,
@@ -525,27 +523,13 @@ pub async fn sandbox_create(
         ));
     }
 
-    // Resolve the --from flag into a container image reference, building from
-    // a Dockerfile first if necessary. Template creates resolve workload shape
-    // on the gateway and skip local image handling.
+    // Resolve the --from flag into a container image reference. Template
+    // creates resolve workload shape on the gateway and skip --from.
     let image: Option<String> = if template.is_some() {
         None
     } else {
         match from {
-            Some(val) => {
-                let resolved = resolve_from(val)?;
-                match resolved {
-                    ResolvedSource::Image(img) => Some(img),
-                    ResolvedSource::Dockerfile {
-                        dockerfile,
-                        context,
-                    } => {
-                        let tag =
-                            build_from_dockerfile(&dockerfile, &context, gateway_name).await?;
-                        Some(tag)
-                    }
-                }
-            }
+            Some(val) => Some(resolve_from(val)?),
             None => None,
         }
     };
@@ -1139,186 +1123,51 @@ pub async fn sandbox_create(
     }
 }
 
-/// Resolved source for the `--from` flag on `sandbox create`.
-#[derive(Debug)]
-enum ResolvedSource {
-    /// A ready-to-use container image reference.
-    Image(String),
-    /// A Dockerfile that must be built before creating the sandbox.
-    Dockerfile {
-        dockerfile: PathBuf,
-        context: PathBuf,
-    },
-}
-
-/// Classify the `--from` value into an image reference or a Dockerfile that
-/// needs building.
+/// Resolve the `--from` value into a container image reference.
 ///
-/// Resolution order:
-/// 1. Existing file whose name contains "Dockerfile" → build from file.
-/// 2. Existing directory that contains a `Dockerfile` → build from directory.
-/// 3. Missing explicit local paths → local error, not image pull.
-/// 4. Value contains `/`, `:`, or `.` → treat as a full image reference.
-/// 5. Otherwise → community sandbox name, expanded via the registry prefix.
-fn resolve_from(value: &str) -> Result<ResolvedSource> {
+/// `--from` identifies an existing sandbox name or container image; it no
+/// longer builds local Dockerfiles or directories. Values that look like an
+/// explicit local path get an actionable error pointing at the explicit
+/// build-then-create workflow, so a typo'd path doesn't silently reach the
+/// gateway as an image pull.
+fn resolve_from(value: &str) -> Result<String> {
     let path = Path::new(value);
 
-    // 1. Existing file that looks like a Dockerfile.
-    if path.is_file() {
-        if filename_looks_like_dockerfile(path) {
-            let dockerfile = path
-                .canonicalize()
-                .into_diagnostic()
-                .wrap_err_with(|| format!("failed to resolve path: {}", path.display()))?;
-            let context = dockerfile
-                .parent()
-                .ok_or_else(|| miette::miette!("Dockerfile has no parent directory"))?
-                .to_path_buf();
-            return Ok(ResolvedSource::Dockerfile {
-                dockerfile,
-                context,
-            });
-        }
-
-        if value_looks_like_local_source(value) {
-            return Err(miette::miette!(
-                "local --from file is not a Dockerfile: {}",
-                path.display()
-            ));
-        }
-    }
-
-    // 2. Existing directory containing a Dockerfile.
-    if path.is_dir() {
-        let candidate = path.join("Dockerfile");
-        if candidate.is_file() {
-            let context = path
-                .canonicalize()
-                .into_diagnostic()
-                .wrap_err_with(|| format!("failed to resolve path: {}", path.display()))?;
-            let dockerfile = context.join("Dockerfile");
-            return Ok(ResolvedSource::Dockerfile {
-                dockerfile,
-                context,
-            });
-        }
+    if value_looks_like_local_path(value) {
+        let build_context = if path.is_dir() {
+            path.display().to_string()
+        } else {
+            path.parent()
+                .map(|p| p.display().to_string())
+                .filter(|p| !p.is_empty())
+                .unwrap_or_else(|| ".".to_string())
+        };
         return Err(miette::miette!(
-            "No Dockerfile found in directory: {}",
-            path.display()
+            "'--from' no longer builds local Dockerfiles or directories: {}\n\
+             Build and tag the image with the container engine used by the gateway, then pass the resulting image reference:\n  \
+             docker build -t <image> {}  # Docker gateway\n  \
+             podman build -t <image> {}  # Podman gateway\n  \
+             openshell sandbox create --from <image>",
+            path.display(),
+            build_context,
+            build_context,
         ));
     }
 
-    if path.exists() {
-        return Err(miette::miette!(
-            "local --from path is not a regular file or directory: {}",
-            path.display()
-        ));
-    }
-
-    // 3. Missing explicit local paths should fail locally. Otherwise values
-    // like `./Dockerfile` reach the gateway as image references and fail as
-    // Docker pull errors.
-    if value_looks_like_local_source(value) {
-        return Err(miette::miette!(
-            "local --from path does not exist: {}\n\
-             Use an existing Dockerfile, a directory containing Dockerfile, or a container image reference.",
-            path.display()
-        ));
-    }
-
-    // 4. Full image reference or community sandbox name — delegate to shared
-    //    resolution in openshell-core.
-    Ok(ResolvedSource::Image(
-        openshell_core::image::resolve_community_image(value),
-    ))
+    // Full image reference or community sandbox name — delegate to shared
+    // resolution in openshell-core.
+    Ok(openshell_core::image::resolve_community_image(value))
 }
 
-fn filename_looks_like_dockerfile(path: &Path) -> bool {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy())
-        .unwrap_or_default();
-    let lower = name.to_lowercase();
-    lower.contains("dockerfile") || lower.ends_with(".dockerfile")
-}
-
-fn value_looks_like_local_source(value: &str) -> bool {
-    value_is_explicit_local_path(value) || value_looks_like_bare_dockerfile_name(value)
-}
-
-fn value_is_explicit_local_path(value: &str) -> bool {
+fn value_looks_like_local_path(value: &str) -> bool {
     let path = Path::new(value);
     path.is_absolute()
         || matches!(value, "." | "..")
         || value.starts_with("./")
         || value.starts_with("../")
         || value.starts_with("~/")
-}
-
-fn value_looks_like_bare_dockerfile_name(value: &str) -> bool {
-    !value.contains('/') && !value.contains(':') && filename_looks_like_dockerfile(Path::new(value))
-}
-
-fn dockerfile_sources_supported_for_gateway(metadata: Option<&GatewayMetadata>) -> bool {
-    !metadata.is_some_and(|metadata| metadata.is_remote)
-}
-
-/// Build a Dockerfile and return the local Docker tag.
-///
-/// Package-managed local gateways use the same Docker daemon that the CLI
-/// builds into, so the tag is passed through directly and the active compute
-/// driver resolves it.
-async fn build_from_dockerfile(
-    dockerfile: &Path,
-    context: &Path,
-    gateway_name: &str,
-) -> Result<String> {
-    let metadata = get_gateway_metadata(gateway_name);
-    if !dockerfile_sources_supported_for_gateway(metadata.as_ref()) {
-        return Err(miette!(
-            "local Dockerfile sources are only supported for local gateways; gateway '{}' is remote",
-            gateway_name
-        ));
-    }
-
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let tag = format!("openshell/sandbox-from:{timestamp}");
-
-    eprintln!(
-        "Building image {} from {}",
-        tag.cyan(),
-        dockerfile.display()
-    );
-    eprintln!("  {} {}", "Context:".dimmed(), context.display());
-    eprintln!("  {} {}", "Gateway:".dimmed(), gateway_name);
-    eprintln!();
-
-    let mut on_log = |msg: String| {
-        eprintln!("  {msg}");
-    };
-
-    openshell_bootstrap::build::build_local_image(
-        dockerfile,
-        &tag,
-        context,
-        &HashMap::new(),
-        &mut on_log,
-    )
-    .await?;
-
-    eprintln!();
-    eprintln!(
-        "{} Image {} is available in the local Docker daemon for gateway '{}'.",
-        "✓".green().bold(),
-        tag.cyan(),
-        gateway_name,
-    );
-    eprintln!();
-
-    Ok(tag)
+        || path.is_file()
+        || path.is_dir()
 }
 
 /// Load sandbox policy YAML.
@@ -5965,13 +5814,13 @@ fn format_endpoint(endpoint: &openshell_core::proto::NetworkEndpoint) -> String 
 #[cfg(test)]
 mod tests {
     use super::{
-        PolicyGetView, ProvisioningStep, build_sandbox_resource_limits,
-        dockerfile_sources_supported_for_gateway, format_endpoint, format_log_line, git_sync_files,
-        has_main_process_result, parse_cli_setting_value, parse_credential_expiry_cli_value,
-        parse_driver_config_json, parse_secret_material_env_pairs, policy_revision_list_json,
-        policy_revision_to_json, provisioning_timeout_message, ready_false_condition_message,
-        resolve_from, sandbox_should_persist, sandbox_upload_plan, service_endpoint_to_json,
-        service_expose_status_error, service_url_for_gateway, workspace_member_to_json,
+        PolicyGetView, ProvisioningStep, build_sandbox_resource_limits, format_endpoint,
+        format_log_line, git_sync_files, has_main_process_result, parse_cli_setting_value,
+        parse_credential_expiry_cli_value, parse_driver_config_json, parse_secret_material_env_pairs,
+        policy_revision_list_json, policy_revision_to_json, provisioning_timeout_message,
+        ready_false_condition_message, resolve_from, sandbox_should_persist, sandbox_upload_plan,
+        service_endpoint_to_json, service_expose_status_error, service_url_for_gateway,
+        workspace_member_to_json,
     };
     use crate::TEST_ENV_LOCK;
     use crate::commands::common::{
@@ -5983,7 +5832,6 @@ mod tests {
     use std::process::Command;
     use tonic::Status;
 
-    use openshell_bootstrap::GatewayMetadata;
     use openshell_core::progress::{
         PROGRESS_STEP_PULLING_IMAGE, PROGRESS_STEP_REQUESTING_SANDBOX,
         PROGRESS_STEP_STARTING_SANDBOX,
@@ -6486,47 +6334,40 @@ mod tests {
     }
 
     #[test]
-    fn resolve_from_classifies_existing_dockerfile_path() {
+    fn resolve_from_rejects_existing_dockerfile_path() {
         let temp = tempfile::tempdir().expect("failed to create tempdir");
         let dockerfile = temp.path().join("Dockerfile");
         fs::write(&dockerfile, "FROM scratch\n").expect("failed to write Dockerfile");
 
-        match resolve_from(dockerfile.to_str().expect("temp path is not UTF-8"))
-            .expect("expected Dockerfile source")
-        {
-            super::ResolvedSource::Dockerfile {
-                dockerfile: resolved,
-                context,
-            } => {
-                assert_eq!(
-                    resolved,
-                    dockerfile
-                        .canonicalize()
-                        .expect("failed to canonicalize Dockerfile")
-                );
-                assert_eq!(
-                    context,
-                    temp.path()
-                        .canonicalize()
-                        .expect("failed to canonicalize context")
-                );
-            }
-            super::ResolvedSource::Image(image) => {
-                panic!("expected Dockerfile source, got image {image}");
-            }
-        }
+        let err = resolve_from(dockerfile.to_str().expect("temp path is not UTF-8"))
+            .expect_err("expected local Dockerfile path to be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("no longer builds local Dockerfiles or directories"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.to_string().contains("docker build -t <image>"),
+            "expected actionable build guidance: {err}"
+        );
+        assert!(
+            err.to_string().contains("podman build -t <image>"),
+            "expected Podman build guidance: {err}"
+        );
     }
 
     #[test]
-    fn resolve_from_rejects_missing_explicit_dockerfile_path() {
+    fn resolve_from_rejects_missing_explicit_local_path() {
         let temp = tempfile::tempdir().expect("failed to create tempdir");
         let missing = temp.path().join("Dockerfile");
 
         let err = resolve_from(missing.to_str().expect("temp path is not UTF-8"))
-            .expect_err("expected missing Dockerfile path to be rejected");
+            .expect_err("expected missing explicit local path to be rejected");
 
         assert!(
-            err.to_string().contains("local --from path does not exist"),
+            err.to_string()
+                .contains("no longer builds local Dockerfiles or directories"),
             "unexpected error: {err}"
         );
     }
@@ -6535,51 +6376,10 @@ mod tests {
     fn resolve_from_keeps_dockerfile_named_image_refs_as_images() {
         let image_ref = "ghcr.io/acme/dockerfile-runner:latest";
 
-        match resolve_from(image_ref).expect("expected image source") {
-            super::ResolvedSource::Image(image) => assert_eq!(image, image_ref),
-            super::ResolvedSource::Dockerfile { .. } => {
-                panic!("expected image ref, got Dockerfile source");
-            }
-        }
-    }
-
-    #[test]
-    fn dockerfile_sources_are_rejected_for_remote_gateways() {
-        let metadata = GatewayMetadata {
-            name: "remote".to_string(),
-            gateway_endpoint: "https://gateway.example.com".to_string(),
-            is_remote: true,
-            gateway_port: 443,
-            remote_host: Some("user@gateway.example.com".to_string()),
-            resolved_host: Some("gateway.example.com".to_string()),
-            auth_mode: None,
-            edge_team_domain: None,
-            edge_auth_url: None,
-            vm_driver_state_dir: None,
-            ..Default::default()
-        };
-
-        assert!(!dockerfile_sources_supported_for_gateway(Some(&metadata)));
-    }
-
-    #[test]
-    fn dockerfile_sources_are_allowed_for_local_gateways() {
-        let metadata = GatewayMetadata {
-            name: "local".to_string(),
-            gateway_endpoint: "http://127.0.0.1:8080".to_string(),
-            is_remote: false,
-            gateway_port: 8080,
-            remote_host: None,
-            resolved_host: None,
-            auth_mode: None,
-            edge_team_domain: None,
-            edge_auth_url: None,
-            vm_driver_state_dir: None,
-            ..Default::default()
-        };
-
-        assert!(dockerfile_sources_supported_for_gateway(Some(&metadata)));
-        assert!(dockerfile_sources_supported_for_gateway(None));
+        assert_eq!(
+            resolve_from(image_ref).expect("expected image source"),
+            image_ref
+        );
     }
 
     #[test]

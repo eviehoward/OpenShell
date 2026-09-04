@@ -73,7 +73,7 @@ Manifest paths support these prefixes:
 8. Render the prompt template with runtime values such as `{{HARNESS}}`,
    `{{RUN_MODE}}`, `{{POLL_INTERVAL_SECONDS}}`, `{{USER_PROMPT}}`, and
    manifest-declared subagent variables such as `{{REVIEWER_COMMAND}}`.
-9. Build a temporary Docker context that bakes the rendered payload into
+9. Build a temporary image context that bakes the rendered payload into
    `/etc/openshell/agent-payload`.
 10. Apply manifest-declared gateway settings.
 11. Resolve provider profile IDs by scanning `profile_paths` in order.
@@ -85,7 +85,8 @@ Manifest paths support these prefixes:
      to the sandbox.
 15. Configure and rotate refresh-backed provider credentials when declared by
      the manifest.
-16. Run `openshell sandbox create` from that temporary Dockerfile source.
+16. Build the temporary Dockerfile, then run `openshell sandbox create` from
+    the resulting image reference.
 17. Inside the sandbox, run `/etc/openshell/agent-payload/runtime/entrypoint.sh`.
 18. The runtime entrypoint starts
     `/etc/openshell/agent-payload/runtime/supervisor.sh`.

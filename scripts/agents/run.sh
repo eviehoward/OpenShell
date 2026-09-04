@@ -683,7 +683,14 @@ File.open(dockerfile_path, "a") do |file|
 end
 RUBY
 
-    SANDBOX_FROM="$build_dockerfile"
+    # Build into the same local engine selected for the gateway. The shared
+    # helper selects Docker or Podman and normalizes their build differences.
+    # Source it here so --help does not require a container engine.
+    source "$ROOT_DIR/tasks/scripts/container-engine.sh"
+    local image_tag="openshell/agent-${AGENT_ID}:$(date +%s)"
+    log "Building sandbox image '$image_tag' with $CONTAINER_ENGINE."
+    ce_build --load --file "$build_dockerfile" --tag "$image_tag" "$build_context"
+    SANDBOX_FROM="$image_tag"
 }
 
 log "Staging immutable sandbox payload from '$SANDBOX_FROM'."

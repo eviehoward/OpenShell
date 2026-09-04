@@ -47,9 +47,7 @@ systemd commands directly:
 
 ### Building from local Dockerfiles
 
-`openshell sandbox create --from ./Dockerfile` builds via the local
-Docker daemon. With the RPM Podman driver, build the image with Podman
-and reference it directly:
+Build the image with Podman, then reference it directly:
 
 ```shell
 podman build -t my-sandbox ./my-dir
