@@ -30,10 +30,17 @@ e2e/rust/tests/odh/
 ├── tier2/                     # Tier 2: medium/low priority positive tests
 │   └── mod.rs                    # empty — no scenarios yet
 ├── tier3/                      # Tier 3: negative and destructive tests
+<<<<<<< HEAD
 │   └── mod.rs                    # empty — no scenarios yet
 ├── tiers.toml                  # data-only gateway modes and ordered tier phases
 ├── tier_plan.py                # validates modes, overlays, and test selectors
 └── run-odh-test-tier.sh        # runs one resolved phase against its gateway
+=======
+│   ├── mod.rs
+│   └── gateway_failover.rs       # external-PostgreSQL HA gateway failover
+├── tiers.toml                  # tier → upstream test binaries + ODH module filter
+└── run-odh-test-tier.sh        # runs one tier against a deployed gateway
+>>>>>>> 6e53d39f (CARRY: test(odh): add gateway failover coverage)
 ```
 
 All ODH test functions compile into a single `odh` test binary
@@ -56,8 +63,9 @@ plain module is enough — no new crate and no workspace change.
   `tokio::process::Command` for `oc`, injecting `--context` from
   `OPENSHELL_E2E_KUBE_CONTEXT_ACTIVE` (exported by `e2e/with-kube-gateway.sh`)
   when it is set, so every ODH test targets the same cluster the upstream
-  harness does. `oc_json()` runs a query and parses `-o json` output, panicking
-  with a descriptive message on any failure.
+  harness does. It also centralizes namespace/release resolution and Pod Ready
+  checks. `oc_json()` runs a query and parses `-o json` output, panicking with
+  a descriptive message on any failure.
 - `odh_harness::selinux::SelinuxAudit` — an opt-in scenario guard that detects
   OpenShift, requires every Ready worker to report `Enforcing`, records
   node-local audit cutoffs, and rejects OpenShell AVCs on completion.
@@ -106,10 +114,12 @@ Tier 1 checks the process-supervisor SELinux label and its mapped upstream
 tests. Tier 2 runs `workspace_lifecycle`, ODH Tier 2, and image provenance in
 shared mode, then runs `workspace_namespace_managed` against a separate
 managed-mode deployment. The `odh` and `full` tiers use the same shared then
-managed split. Image provenance runs once in each tier's shared phase. Smoke
-and Tier 1/3 use only shared mode. Add Rust scenarios by creating a `.rs` file
-under the tier's directory and declaring it with a `mod` line in that tier's
-`mod.rs`; add its selector to the corresponding tier table or mode extension.
+managed split. Tier 3 includes an opt-in  destructive external-PostgreSQL HA
+gateway failover scenario. Image provenance runs once in each tier's shared
+phase. Smoke and Tier 1/3 use only shared mode. Add Rust scenarios by creating
+a `.rs` file under the tier's directory and declaring it with a `mod` line in
+that tier's `mod.rs`; add its selector to the corresponding tier table or mode
+extension.
 
 To add a Helm-overlay mode, define its validated values paths and expected
 deployed values under `[modes.<name>]`. Shared is implicit; add a named mode
@@ -149,8 +159,37 @@ Excluded tests do not appear as passes or skips in the JUnit report.
 - Rust toolchain and `mise` installed.
 - Python 3.11 or newer, `cargo-nextest`, and `xsltproc` installed for tiered
   runs and HTML reports.
+<<<<<<< HEAD
 - The local task builds `openshell-cli` when `OPENSHELL_BIN` is unset. Set
   `OPENSHELL_BIN` to use another CLI binary.
+=======
+- The `openshell` CLI binary built (`cargo build -p openshell-cli`) and its
+  active gateway pointed at the deployed OpenShell instance (`openshell
+  gateway add ...` / `openshell gateway select ...`) — the harness shells out
+  to this binary and relies on its persisted config, not on any env var.
+- For `tier3::gateway_failover`, a deployment installed with
+  `deploy/helm/openshell/ci/values-high-availability.yaml`, an external
+  PostgreSQL Secret, and a configured CLI gateway name. The test discovers two
+  ready gateway pods and opens its own loopback `oc port-forward` to direct the
+  initial create and session to one pod. It confirms the session disconnects
+  when that pod is deleted, then
+  reconnects through a second port-forward to the pre-existing surviving
+  replica. This pins the check to that replica and does not exercise the
+  configured Service or Route endpoint. The workload heartbeat includes a
+  UUID generated at process start; reconnect must report the same UUID, so a
+  restarted workload does not satisfy the session check. Set
+  `OPENSHELL_GATEWAY` to the configured gateway name; it also selects the
+  gateway used by the image-provenance check that runs with every tier.
+  `OPENSHELL_ODH_HA_GATEWAY_NAME` remains a compatibility fallback when
+  `OPENSHELL_GATEWAY` is not set. The test identity needs permission to get
+  the PostgreSQL Secret referenced by `OPENSHELL_DB_URL`, create pod
+  port-forwards, and delete gateway pods. The test
+  deletes a gateway pod only when `OPENSHELL_ODH_HA_FAILOVER=1` is set. Its
+  default pod selector is the Helm
+  `app.kubernetes.io/name=openshell,app.kubernetes.io/instance=<RELEASE>`
+  selector; override it with `OPENSHELL_ODH_HA_GATEWAY_SELECTOR` for a renamed
+  chart deployment.
+>>>>>>> 6e53d39f (CARRY: test(odh): add gateway failover coverage)
 
 ### The `KUBECONFIG` gotcha
 
@@ -189,6 +228,51 @@ context you happen to have active elsewhere. This means:
 | `mise run e2e:odh:tier2` | Tier 2: mapped upstream tests + ODH `tier2::` + image provenance |
 | `mise run e2e:odh:tier3` | Tier 3: mapped upstream tests + ODH `tier3::` + image provenance |
 | `cargo nextest run --manifest-path e2e/rust/Cargo.toml --features e2e-odh --test odh -E 'test(=module::test_name)'` | A single ODH test function |
+
+The destructive HA failover scenario is disabled by default. Run it only
+against a disposable or explicitly approved HA deployment:
+
+```bash
+OPENSHELL_ODH_HA_FAILOVER=1 mise run e2e:odh:tier3
+```
+
+The existing `e2e/with-kube-gateway.sh` wrapper can provision the HA fixture
+in an ephemeral namespace: it installs the chart with the HA values overlay,
+deploys the PostgreSQL fixture, configures the OpenShift Route and CLI, then
+tears down its resources after the test. The Rust test itself assumes an
+already-deployed gateway, as do the other ODH tier tests. To run only this
+scenario through the wrapper, use a disposable OpenShift context and a built
+`target/debug/openshell` CLI. The wrapper's existing-context mode uses one
+registry and image tag for gateway, sandbox runtime, and supervisor; deployments
+with different image sources for those components still need explicit Helm
+overrides or a wrapper extension.
+
+```bash
+OPENSHELL_E2E_KUBE_CONTEXT=<disposable-context> \
+OPENSHELL_E2E_KUBE_EXTERNAL_POSTGRES_SECRET=openshell-ha-pg \
+OPENSHELL_E2E_KUBE_EXTRA_VALUES=deploy/helm/openshell/ci/values-high-availability.yaml \
+OPENSHELL_GATEWAY=<configured-gateway-name> \
+OPENSHELL_ODH_HA_FAILOVER=1 \
+e2e/with-kube-gateway.sh cargo test --manifest-path e2e/rust/Cargo.toml \
+  --features e2e-odh --test odh -- \
+  tier3::gateway_failover::gateway_pod_failover_preserves_sandbox_session_and_workspace \
+  --exact --nocapture
+```
+
+Before running failover on an existing deployment, confirm that a normal
+`smoke::sandbox::test_create_delete` passes. The failover test bounds sandbox
+creation to five minutes and requires the initial session to remain attached
+for more than two seconds before deleting any gateway pod. It retries that
+preflight with a replacement pod port-forward when `oc port-forward` stalls
+the SSH-based `sandbox connect` path. A failure after the retries means
+failover has not been exercised.
+After sandbox creation, the test awaits a sandbox deletion attempt even when a
+later assertion fails.
+
+The failover scenario explicitly uses the shared E2E workload image, like the
+smoke tests. It does not use the chart's default sandbox image: that image can
+carry a discovered policy incompatible with the gateway under test, causing
+the supervisor to exit before readiness and masking the failover behavior.
 
 Example, running the Smoke tier against a real cluster:
 
