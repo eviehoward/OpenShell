@@ -10,11 +10,16 @@ position: 4
 
 The gateway's configured compute driver determines how OpenShell creates each sandbox. The CLI workflow stays the same across drivers: you create, connect to, inspect, stop, start, and delete sandboxes through the gateway API.
 
-Caller driver config is disabled by default across drivers. Enabling it does
-not authorize external attachments: referenced resources must carry matching
-operator-controlled approval labels. GPU device attachments are temporarily
-exempt. Host bind mounts, supplemental image mounts, and MXC host filesystem
-grants lack a trusted label resolver and are unavailable with admission enabled.
+Caller driver config is disabled by default except for MXC, whose required
+command uses driver config. For drivers with resource admission enabled,
+referenced external attachments must carry matching operator-controlled approval
+labels. GPU device attachments are temporarily exempt. Host bind mounts,
+supplemental image mounts, and MXC host filesystem grants lack a trusted label
+resolver and are unavailable with admission enabled. MXC therefore disables
+resource label admission by default and logs a warning at gateway startup.
+Default MXC gateways do not use approval labels for host filesystem grants. An
+operator can explicitly enable admission, which rejects MXC sandbox creates
+until a trusted resolver is available.
 See [External Resource Admission](gateway-config#external-resource-admission)
 for configuration, migration, and the explicit unsafe opt-out.
 
