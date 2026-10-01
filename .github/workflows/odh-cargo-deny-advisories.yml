@@ -57,13 +57,19 @@ jobs:
             CARGO="$cargo_bin" \
             PATH="$(dirname "$cargo_bin"):$(dirname "$deny_bin"):$PATH" \
             "$deny_bin" check advisories
+
+      # Temporary test-only step: remove before opening the ODH PR.
+      - name: Force test failure
+        run: |
+          echo "::error::Intentional failure to test Slack alert delivery"
+          exit 1
   notify-slack:
     name: Notify Slack on failure
     needs: advisories
     if: >-
       ${{ always() &&
           needs.advisories.result == 'failure' &&
-          github.repository == 'red-hat-data-services/openshell' }}
+          github.repository == 'eviehoward/OpenShell' }}
     runs-on: ubuntu-latest
     steps:
       - name: Post failure notification
@@ -72,10 +78,10 @@ jobs:
           WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           jq -nc \
-            --arg summary ":x: ODH Cargo Deny Advisories failed" \
-            --arg detail "Result: ${{ needs.advisories.result }}
+            --arg text ":x: ODH Cargo Deny Advisories failed
+            Result: ${{ needs.advisories.result }}
             Run: $WORKFLOW_RUN_URL" \
-            '{summary: $summary, detail: $detail}' |
+            '{text: $text}' |
             curl --fail --silent --show-error \
               -X POST \
               -H 'Content-Type: application/json' \

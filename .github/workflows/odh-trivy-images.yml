@@ -251,7 +251,7 @@ jobs:
     if: >-
       ${{ always() &&
           needs.scan.result == 'failure' &&
-          github.repository == 'red-hat-data-services/openshell' }}
+          github.repository == 'eviehoward/OpenShell' }}
     runs-on: ubuntu-latest
     steps:
       - name: Post failure notification
@@ -260,10 +260,11 @@ jobs:
           WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           jq -nc \
-            --arg summary ":x: ODH Trivy Image Scan failed" \
-            --arg detail "Result: ${{ needs.scan.result }}
-            Run: $WORKFLOW_RUN_URL" \
-            '{summary: $summary, detail: $detail}' |
+            --arg text ":x: ODH Trivy Image Scan failed
+            Result: ${{ needs.scan.result }}
+            Run: $WORKFLOW_RUN_URL
+            See the run's Step Summary for the full RPM and Rust-crate result table." \
+            '{text: $text}' |
             curl --fail --silent --show-error \
               -X POST \
               -H 'Content-Type: application/json' \
