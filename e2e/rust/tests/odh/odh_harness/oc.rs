@@ -8,7 +8,63 @@
 //! command construction here keeps every test targeting the same cluster and
 //! reporting failures the same way.
 
+use std::process::Stdio;
+
 use serde_json::Value;
+use tokio::io::AsyncWriteExt as _;
+
+const DEFAULT_DEPLOYMENT_NAME: &str = "openshell";
+
+/// Resolves the namespace containing gateway resources for the ODH deployment.
+///
+/// The names match the standard ODH and Kubernetes e2e configuration
+/// variables.
+pub fn gateway_namespace() -> String {
+    std::env::var("NAMESPACE")
+        .or_else(|_| std::env::var("OPENSHELL_E2E_KUBE_NAMESPACE"))
+        .unwrap_or_else(|_| DEFAULT_DEPLOYMENT_NAME.to_string())
+}
+
+/// Resolves the namespace containing Sandbox custom resources and workload Pods.
+///
+/// Sandbox resources normally share the gateway namespace. Set
+/// `SANDBOX_NAMESPACE` when the compute driver uses a separate namespace.
+pub fn sandbox_namespace() -> String {
+    std::env::var("SANDBOX_NAMESPACE").unwrap_or_else(|_| gateway_namespace())
+}
+
+/// Resolves the Helm release name used by the ODH deployment under test.
+pub fn release() -> String {
+    std::env::var("RELEASE")
+        .or_else(|_| std::env::var("OPENSHELL_E2E_KUBE_RELEASE"))
+        .unwrap_or_else(|_| DEFAULT_DEPLOYMENT_NAME.to_string())
+}
+
+/// Returns whether a Kubernetes Pod JSON object is Running and Ready.
+pub fn pod_is_ready(pod: &Value) -> bool {
+    pod["status"]["phase"].as_str() == Some("Running")
+        && pod["status"]["conditions"]
+            .as_array()
+            .is_some_and(|conditions| {
+                conditions.iter().any(|condition| {
+                    condition["type"].as_str() == Some("Ready")
+                        && condition["status"].as_str() == Some("True")
+                })
+            })
+}
+
+/// Output from an `oc` invocation.
+pub struct OcOutput {
+    pub success: bool,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl OcOutput {
+    pub fn diagnostics(&self) -> String {
+        format!("stdout:\n{}\nstderr:\n{}", self.stdout, self.stderr)
+    }
+}
 
 /// Builds an `oc` command targeting the active e2e cluster.
 ///
@@ -27,22 +83,75 @@ pub fn oc_command() -> tokio::process::Command {
     cmd
 }
 
+/// Runs `oc <args>`, optionally writing `input` to standard input.
+///
+/// Returns stdout and stderr even when the command fails, allowing tests to
+/// make assertions with the command's diagnostic output.
+pub async fn oc(args: &[&str], input: Option<&str>) -> OcOutput {
+    let mut cmd = oc_command();
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    if input.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
+    let mut child = cmd.spawn().expect(
+        "failed to run `oc` — required for ODH cluster-state checks; ensure it is in PATH \\
+         and KUBECONFIG targets the cluster",
+    );
+    if let Some(input) = input {
+        child
+            .stdin
+            .take()
+            .expect("piped stdin")
+            .write_all(input.as_bytes())
+            .await
+            .expect("write manifest to oc");
+    }
+    let output = child.wait_with_output().await.expect("wait for oc");
+    OcOutput {
+        success: output.status.success(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
+/// Returns whether the active cluster exposes the OpenShift Route API.
+///
+/// ODH-only tests use this to skip cleanly on non-OpenShift clusters while
+/// preserving the standard tier entry points.
+pub async fn is_openshift() -> bool {
+    let output = oc_command()
+        .args([
+            "api-resources",
+            "--api-group=route.openshift.io",
+            "--no-headers",
+        ])
+        .output()
+        .await
+        .expect(
+            "failed to run `oc api-resources` — cannot decide whether the cluster is OpenShift; \\
+             ensure `oc` is in PATH and KUBECONFIG targets the cluster",
+        );
+    assert!(
+        output.status.success(),
+        "oc api-resources failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    !output.stdout.is_empty()
+}
+
 /// Runs `oc <args>` and parses stdout as JSON.
 ///
 /// Panics with a descriptive message if `oc` cannot be launched, exits
 /// non-zero, or does not return valid JSON — use it for `-o json` queries
 /// whose failure should fail the test.
 pub async fn oc_json(args: &[&str]) -> Value {
-    let output = oc_command().args(args).output().await.expect(
-        "failed to run `oc` — required for ODH cluster-state checks; ensure it is in PATH \
-         and KUBECONFIG targets the cluster",
-    );
+    let output = oc(args, None).await;
     assert!(
-        output.status.success(),
-        "oc {args:?} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        output.success,
+        "oc {args:?} failed:\n{}",
+        output.diagnostics()
     );
-    serde_json::from_slice(&output.stdout)
+    serde_json::from_str(&output.stdout)
         .unwrap_or_else(|e| panic!("oc {args:?} did not return valid JSON: {e}"))
 }
 
@@ -203,8 +312,31 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        pod_node_and_uid, pod_uid_cgroup_form, sandbox_id_from_json, supervisor_pod_from_json,
+        pod_is_ready, pod_node_and_uid, pod_uid_cgroup_form, sandbox_id_from_json,
+        supervisor_pod_from_json,
     };
+
+    #[test]
+    fn recognizes_only_running_ready_pods() {
+        assert!(pod_is_ready(&json!({
+            "status": {
+                "phase": "Running",
+                "conditions": [{"type": "Ready", "status": "True"}]
+            }
+        })));
+        assert!(!pod_is_ready(&json!({
+            "status": {
+                "phase": "Pending",
+                "conditions": [{"type": "Ready", "status": "True"}]
+            }
+        })));
+        assert!(!pod_is_ready(&json!({
+            "status": {
+                "phase": "Running",
+                "conditions": [{"type": "Ready", "status": "False"}]
+            }
+        })));
+    }
 
     #[test]
     fn resolves_sandbox_id_from_named_sandbox() {
