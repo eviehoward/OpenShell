@@ -18,7 +18,9 @@ e2e/rust/tests/odh/
 ├── main.rs                    # crate root, declares helper + tier modules, gated on feature "e2e-odh"
 ├── odh_harness/               # fork-local shared test helpers (see "Shared test helpers")
 │   ├── mod.rs
-│   └── oc.rs                   # `oc` command builder (honors active kube context) + JSON runner
+│   ├── oc.rs                   # `oc` command builder (honors active kube context) + JSON runner
+│   ├── sandbox.rs              # sandbox CR helpers, including pod-selector resolution
+│   └── selinux.rs              # OpenShift SELinux audit helpers
 ├── smoke/                     # Smoke tier: component-level critical tests
 │   ├── mod.rs
 │   ├── gateway.rs              # gateway reachability
@@ -30,17 +32,11 @@ e2e/rust/tests/odh/
 ├── tier2/                     # Tier 2: medium/low priority positive tests
 │   └── mod.rs                    # empty — no scenarios yet
 ├── tier3/                      # Tier 3: negative and destructive tests
-<<<<<<< HEAD
-│   └── mod.rs                    # empty — no scenarios yet
+│   ├── mod.rs
+│   └── gateway_failover.rs       # external-PostgreSQL HA gateway failover
 ├── tiers.toml                  # data-only gateway modes and ordered tier phases
 ├── tier_plan.py                # validates modes, overlays, and test selectors
 └── run-odh-test-tier.sh        # runs one resolved phase against its gateway
-=======
-│   ├── mod.rs
-│   └── gateway_failover.rs       # external-PostgreSQL HA gateway failover
-├── tiers.toml                  # tier → upstream test binaries + ODH module filter
-└── run-odh-test-tier.sh        # runs one tier against a deployed gateway
->>>>>>> 6e53d39f (CARRY: test(odh): add gateway failover coverage)
 ```
 
 All ODH test functions compile into a single `odh` test binary
@@ -69,6 +65,9 @@ plain module is enough — no new crate and no workspace change.
 - `odh_harness::selinux::SelinuxAudit` — an opt-in scenario guard that detects
   OpenShift, requires every Ready worker to report `Enforcing`, records
   node-local audit cutoffs, and rejects OpenShell AVCs on completion.
+- `odh_harness::sandbox::sandbox_pod_selector()` — resolves a sandbox custom
+  resource's reported workload selector so tests can find its controller-owned
+  pod.
 
 Put ODH-specific shared helpers here (the `oc` builder and node-level SELinux
 checks), and reuse them rather than
@@ -159,26 +158,19 @@ Excluded tests do not appear as passes or skips in the JUnit report.
 - Rust toolchain and `mise` installed.
 - Python 3.11 or newer, `cargo-nextest`, and `xsltproc` installed for tiered
   runs and HTML reports.
-<<<<<<< HEAD
 - The local task builds `openshell-cli` when `OPENSHELL_BIN` is unset. Set
   `OPENSHELL_BIN` to use another CLI binary.
-=======
-- The `openshell` CLI binary built (`cargo build -p openshell-cli`) and its
-  active gateway pointed at the deployed OpenShell instance (`openshell
-  gateway add ...` / `openshell gateway select ...`) — the harness shells out
-  to this binary and relies on its persisted config, not on any env var.
 - For `tier3::gateway_failover`, a deployment installed with
   `deploy/helm/openshell/ci/values-high-availability.yaml`, an external
   PostgreSQL Secret, and a configured CLI gateway name. The test discovers two
   ready gateway pods and opens its own loopback `oc port-forward` to direct the
   initial create and session to one pod. It confirms the session disconnects
-  when that pod is deleted, then
-  reconnects through a second port-forward to the pre-existing surviving
-  replica. This pins the check to that replica and does not exercise the
-  configured Service or Route endpoint. The workload heartbeat includes a
-  UUID generated at process start; reconnect must report the same UUID, so a
-  restarted workload does not satisfy the session check. Set
-  `OPENSHELL_GATEWAY` to the configured gateway name; it also selects the
+  when that pod is deleted, then reconnects through a second port-forward to
+  the pre-existing surviving replica. This pins the check to that replica and
+  does not exercise the configured Service or Route endpoint. The workload
+  heartbeat includes a UUID generated at process start; reconnect must report
+  the same UUID, so a restarted workload does not satisfy the session check.
+  Set `OPENSHELL_GATEWAY` to the configured gateway name; it also selects the
   gateway used by the image-provenance check that runs with every tier.
   `OPENSHELL_ODH_HA_GATEWAY_NAME` remains a compatibility fallback when
   `OPENSHELL_GATEWAY` is not set. The test identity needs permission to get
@@ -189,7 +181,6 @@ Excluded tests do not appear as passes or skips in the JUnit report.
   `app.kubernetes.io/name=openshell,app.kubernetes.io/instance=<RELEASE>`
   selector; override it with `OPENSHELL_ODH_HA_GATEWAY_SELECTOR` for a renamed
   chart deployment.
->>>>>>> 6e53d39f (CARRY: test(odh): add gateway failover coverage)
 
 ### The `KUBECONFIG` gotcha
 

@@ -11,7 +11,7 @@
 use std::net::TcpListener;
 use std::panic::AssertUnwindSafe;
 use std::process::{Output, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use base64::Engine as _;
 use futures_util::FutureExt as _;
@@ -20,10 +20,11 @@ use openshell_e2e::harness::sandbox::E2E_WORKLOAD_IMAGE;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, ChildStdout};
-use tokio::time::{sleep, timeout};
+use tokio::time::{Instant, sleep, timeout};
 
 use crate::odh_harness::oc::{
-    is_openshift, namespace, oc, oc_command, oc_json, pod_is_ready, release,
+    gateway_namespace, is_openshift, oc_command, oc_json, oc_with_timeout, pod_is_ready, release,
+    sandbox_namespace,
 };
 use crate::odh_harness::sandbox::sandbox_pod_selector;
 
@@ -36,6 +37,8 @@ const POD_READY_TIMEOUT: Duration = Duration::from_secs(120); // sets timeouts
 const SESSION_TIMEOUT: Duration = Duration::from_secs(60);
 const CREATE_TIMEOUT: Duration = Duration::from_secs(300);
 const CREATE_RECOVERY_TIMEOUT: Duration = Duration::from_secs(120);
+const CLI_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+const SANDBOX_DELETION_TIMEOUT: Duration = Duration::from_secs(300);
 const SESSION_START_ATTEMPTS: usize = 3;
 // The CLI only opens its reconnect window after an attachment has survived
 // two seconds. Keep a one-second margin so pod deletion cannot race that
@@ -88,20 +91,27 @@ impl ManagedSandbox {
         command
             .args(["sandbox", "delete", &self.name])
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let output = command.output().await.map_err(|error| {
-            format!(
-                "failed to delete sandbox {} through {endpoint}: {error}",
-                self.name
-            )
-        })?;
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let output = timeout(CLI_COMMAND_TIMEOUT, command.output())
+            .await
+            .map_err(|_| {
+                format!(
+                    "delete sandbox {} through {endpoint} timed out after {CLI_COMMAND_TIMEOUT:?}",
+                    self.name
+                )
+            })?
+            .map_err(|error| {
+                format!(
+                    "failed to delete sandbox {} through {endpoint}: {error}",
+                    self.name
+                )
+            })?;
         if !output.status.success() {
             return Err(format!(
-                "delete sandbox {} through {endpoint} failed with exit {:?}:\n{}{}",
+                "delete sandbox {} through {endpoint} failed with exit {:?}",
                 self.name,
                 output.status.code(),
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr),
             ));
         }
 
@@ -304,7 +314,7 @@ async fn wait_for_created_sandbox(name: &str, endpoint: &str) -> Result<(), Stri
                     Some("Ready") => return Ok(()),
                     Some("Error") => {
                         return Err(format!(
-                            "sandbox {name} entered Error after the create connection dropped: {sandbox}"
+                            "sandbox {name} entered Error after the create connection dropped"
                         ));
                     }
                     _ => {}
@@ -314,7 +324,9 @@ async fn wait_for_created_sandbox(name: &str, endpoint: &str) -> Result<(), Stri
         }
     })
     .await
-    .map_err(|_| format!("sandbox {name} did not become Ready within {CREATE_RECOVERY_TIMEOUT:?}"))?
+    .map_err(|_| {
+        format!("sandbox {name} did not become Ready within {CREATE_RECOVERY_TIMEOUT:?}")
+    })?
 }
 
 async fn create_on_initial_gateway(endpoint: &str, script: &str) -> ManagedSandbox {
@@ -397,11 +409,6 @@ async fn create_on_initial_gateway(endpoint: &str, script: &str) -> ManagedSandb
             .expect("read sandbox create stderr"),
     };
     if !output.status.success() {
-        let diagnostic = format!(
-            "create sandbox through initial gateway failed:\n{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stdout.contains(&format!("Created sandbox: {name}"))
@@ -418,14 +425,17 @@ async fn create_on_initial_gateway(endpoint: &str, script: &str) -> ManagedSandb
                     if let Err(cleanup_error) = sandbox.cleanup(endpoint).await {
                         eprintln!("{cleanup_error}");
                     }
-                    panic!("{diagnostic}\nRecovery through initial gateway pod failed: {error}");
+                    panic!("sandbox create through the initial gateway failed to recover: {error}");
                 }
             }
         }
         if let Err(cleanup_error) = sandbox.cleanup(endpoint).await {
             eprintln!("{cleanup_error}");
         }
-        panic!("{diagnostic}");
+        panic!(
+            "create sandbox through initial gateway failed with exit {:?}",
+            output.status.code()
+        );
     }
     sandbox
 } // create a sandbox via replica-0 direct endpoint, execute a background script that writes sentinel text to /sandbox/.odh-ha-sentinel
@@ -437,7 +447,7 @@ async fn start_session(sandbox_name: &str, gateway_endpoint: Option<&str>) -> Ac
         .args(["sandbox", "connect", sandbox_name])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .kill_on_drop(true);
     let mut child = command.spawn().expect("spawn sandbox connect");
     let stdout = child
@@ -460,23 +470,22 @@ async fn exec_on_gateway(
         .args(["sandbox", "exec", "--name", sandbox_name, "--no-tty", "--"])
         .args(argv)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let output = command
-        .output()
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let output = timeout(CLI_COMMAND_TIMEOUT, command.output())
         .await
+        .map_err(|_| {
+            format!("sandbox exec through {endpoint} timed out after {CLI_COMMAND_TIMEOUT:?}")
+        })?
         .map_err(|error| format!("failed to run sandbox exec through {endpoint}: {error}"))?;
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
     if !output.status.success() {
         return Err(format!(
-            "sandbox exec through {endpoint} failed with exit {:?}:\n{combined}",
+            "sandbox exec through {endpoint} failed with exit {:?}",
             output.status.code()
         ));
     }
-    Ok(combined)
+    String::from_utf8(output.stdout)
+        .map_err(|error| format!("sandbox exec through {endpoint} returned invalid UTF-8: {error}"))
 }
 
 fn session_marker(line: &str) -> Option<SessionMarker> {
@@ -513,6 +522,31 @@ async fn session_marker_after(
     .map_err(|_| format!("did not receive '{OUTPUT_MARKER}' within {SESSION_TIMEOUT:?}"))?
 } // returns a heartbeat emitted after the requested time, excluding buffered output
 
+async fn session_marker_after_elapsed(
+    session: &mut ActiveSession,
+    minimum_elapsed: Instant,
+) -> Result<SessionMarker, String> {
+    timeout(SESSION_TIMEOUT, async {
+        loop {
+            let line = session
+                .stdout
+                .next_line()
+                .await
+                .map_err(|error| format!("cannot read sandbox connect output: {error}"))?
+                .ok_or_else(|| {
+                    "sandbox connect exited before receiving session output".to_string()
+                })?;
+            if let Some(marker) = session_marker(&line)
+                && Instant::now() > minimum_elapsed
+            {
+                return Ok(marker);
+            }
+        }
+    })
+    .await
+    .map_err(|_| format!("did not receive '{OUTPUT_MARKER}' within {SESSION_TIMEOUT:?}"))?
+}
+
 async fn start_initial_session(
     namespace: &str,
     initial_pod: &str,
@@ -523,9 +557,9 @@ async fn start_initial_session(
     for attempt in 1..=SESSION_START_ATTEMPTS {
         let mut session = start_session(sandbox_name, Some(&forward.endpoint)).await;
         match session_marker_after(&mut session, None).await {
-            Ok(_) => match session_marker_after(
+            Ok(_) => match session_marker_after_elapsed(
                 &mut session,
-                Some(unix_timestamp() + SESSION_ESTABLISHED_DURATION.as_secs()),
+                Instant::now() + SESSION_ESTABLISHED_DURATION,
             )
             .await
             {
@@ -562,13 +596,6 @@ async fn start_initial_session(
     );
 }
 
-fn unix_timestamp() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be after the Unix epoch")
-        .as_secs()
-}
-
 async fn stop_session(session: &mut ActiveSession) {
     let _ = session.child.kill().await;
     let _ = session.child.wait().await;
@@ -587,14 +614,22 @@ async fn assert_sandbox_workload_is_live(namespace: &str, sandbox_name: &str) ->
         .expect("sandbox pod list should contain items");
     assert!(
         !items.is_empty() && items.iter().all(pod_is_ready),
-        "sandbox workload is orphaned or not ready after gateway failover: {pods}"
+        "sandbox workload is orphaned or not ready after gateway failover: {:?}",
+        items
+            .iter()
+            .map(|pod| (
+                pod["metadata"]["name"].as_str().unwrap_or("<unnamed>"),
+                pod_is_ready(pod),
+            ))
+            .collect::<Vec<_>>(),
     );
     selector
 } // checks k8s to make sure the underlying container running the workload didn't crash or get orphaned during failover
 
 async fn assert_sandbox_deleted(endpoint: &str, namespace: &str, name: &str, pod_selector: &str) {
     let cr_selector = format!("openshell.ai/sandbox-name={name}");
-    let result = timeout(CREATE_RECOVERY_TIMEOUT, async {
+    let mut last_observation = None;
+    let result = timeout(SANDBOX_DELETION_TIMEOUT, async {
         loop {
             let mut command = direct_gateway_command(endpoint);
             command.args(["sandbox", "list", "--names"]);
@@ -604,8 +639,7 @@ async fn assert_sandbox_deleted(endpoint: &str, namespace: &str, name: &str, pod
                 .expect("list sandboxes after cleanup");
             assert!(
                 output.status.success(),
-                "could not verify sandbox deletion through the gateway: {}",
-                String::from_utf8_lossy(&output.stderr)
+                "could not verify sandbox deletion through the gateway"
             );
             let still_listed = String::from_utf8_lossy(&output.stdout)
                 .lines()
@@ -640,6 +674,9 @@ async fn assert_sandbox_deleted(endpoint: &str, namespace: &str, name: &str, pod
                 .as_array()
                 .expect("sandbox pod list items")
                 .len();
+            last_observation = Some(format!(
+                "sandbox listed: {still_listed}, custom resources: {cr_count}, workload pods: {pod_count}"
+            ));
             if !still_listed && cr_count == 0 && pod_count == 0 {
                 return;
             }
@@ -649,46 +686,94 @@ async fn assert_sandbox_deleted(endpoint: &str, namespace: &str, name: &str, pod
     .await;
     assert!(
         result.is_ok(),
-        "sandbox {name}, its custom resource, or its pod remained after cleanup for {CREATE_RECOVERY_TIMEOUT:?}"
+        "sandbox {name}, its custom resource, or its pod remained after cleanup for {SANDBOX_DELETION_TIMEOUT:?}; last observation: {}",
+        last_observation.unwrap_or_else(|| "no deletion state observed".to_string())
+    );
+}
+
+async fn wait_for_gateway_pod_deleted(namespace: &str, selector: &str, pod_name: &str) {
+    let result = timeout(POD_READY_TIMEOUT, async {
+        loop {
+            if gateway_pods(namespace, selector)
+                .await
+                .iter()
+                .all(|pod| pod.name != pod_name)
+            {
+                return;
+            }
+            sleep(POLL_INTERVAL).await;
+        }
+    })
+    .await;
+    assert!(
+        result.is_ok(),
+        "gateway pod {pod_name} was not deleted within {POD_READY_TIMEOUT:?}"
     );
 }
 
 async fn run_failover_scenario(
-    namespace: &str,
+    gateway_namespace: &str,
+    sandbox_namespace: &str,
     selector: &str,
     initial_pod: &str,
     surviving_pod: &str,
     initial_forward: &mut PodPortForward,
     sandbox: &ManagedSandbox,
 ) -> String {
-    let (mut initial_session, initial_marker) =
-        start_initial_session(namespace, initial_pod, initial_forward, &sandbox.name).await;
+    let (mut initial_session, initial_marker) = start_initial_session(
+        gateway_namespace,
+        initial_pod,
+        initial_forward,
+        &sandbox.name,
+    )
+    .await;
 
-    let deleted = oc(
-        &["delete", "pod", initial_pod, "-n", namespace, "--wait=true"],
+    // Ensure the surviving replica is ready before dropping the client's
+    // transport, then submit deletion without spending its reconnect window
+    // waiting for Kubernetes to finish terminating the initial pod.
+    wait_for_gateway_pod_ready(gateway_namespace, selector, surviving_pod).await;
+    let deleted = oc_with_timeout(
+        &[
+            "delete",
+            "pod",
+            initial_pod,
+            "-n",
+            gateway_namespace,
+            "--wait=false",
+            "--timeout=150s",
+        ],
         None,
+        Duration::from_secs(180),
     )
     .await;
     assert!(
         deleted.success,
-        "delete gateway pod {initial_pod} failed:\n{}",
-        deleted.diagnostics()
+        "delete gateway pod {initial_pod} failed ({})",
+        deleted.status_summary()
     );
 
     // Keep the endpoint stable while replacing its direct backend. This lets
     // the original client exercise its bounded reconnect behavior.
     stop_port_forward(initial_forward).await;
-    wait_for_gateway_pod_ready(namespace, selector, surviving_pod).await;
-    let reconnect_started_at = unix_timestamp();
     let mut reconnect_forward =
-        port_forward_gateway_pod(namespace, surviving_pod, initial_forward.port).await;
+        port_forward_gateway_pod(gateway_namespace, surviving_pod, initial_forward.port).await;
+    // Read the baseline from the sandbox clock. Heartbeat timestamps use the
+    // same clock, so buffered pre-failover lines cannot satisfy the filter.
+    let reconnect_started_at: u64 =
+        exec_on_gateway(&reconnect_forward.endpoint, &sandbox.name, &["date", "+%s"])
+            .await
+            .expect("read sandbox clock after failover")
+            .trim()
+            .parse()
+            .expect("sandbox date +%s should be an integer");
     let reconnected_marker = session_marker_after(&mut initial_session, Some(reconnect_started_at))
         .await
         .unwrap_or_else(|error| {
             panic!("session did not reconnect through the surviving gateway pod: {error}")
         });
-    assert_eq!(
-        reconnected_marker.process_id, initial_marker.process_id,
+    wait_for_gateway_pod_deleted(gateway_namespace, selector, initial_pod).await;
+    assert!(
+        reconnected_marker.process_id == initial_marker.process_id,
         "sandbox workload process changed while the original client reconnected after gateway failover"
     );
     stop_session(&mut initial_session).await;
@@ -705,7 +790,7 @@ async fn run_failover_scenario(
         "workspace sentinel was lost after gateway failover: {sentinel}"
     );
     stop_port_forward(&mut reconnect_forward).await;
-    assert_sandbox_workload_is_live(namespace, &sandbox.name).await
+    assert_sandbox_workload_is_live(sandbox_namespace, &sandbox.name).await
 }
 
 #[tokio::test]
@@ -715,17 +800,20 @@ async fn gateway_pod_failover_preserves_sandbox_session_and_workspace() {
         eprintln!("skipping destructive HA failover test; set {ENABLE_ENV}=1 to enable it");
         return;
     }
-    if !is_openshift().await {
+    if !is_openshift().await.unwrap_or_else(|error| {
+        panic!("cannot determine whether the active cluster is OpenShift: {error}")
+    }) {
         eprintln!("skipping HA failover test; the active cluster is not OpenShift");
         return;
     }
 
     // replica discovery
-    let namespace = namespace();
+    let gateway_namespace = gateway_namespace();
+    let sandbox_namespace = sandbox_namespace();
     let release = release();
     let selector = gateway_selector(&release);
-    assert_ha_deployment(&namespace, &selector).await;
-    let pods = gateway_pods(&namespace, &selector).await; // scan for running gateways
+    assert_ha_deployment(&gateway_namespace, &selector).await;
+    let pods = gateway_pods(&gateway_namespace, &selector).await; // scan for running gateways
     assert!(
         pods.len() >= 2 && pods.iter().filter(|pod| pod.ready).count() >= 2,
         "HA test requires two ready gateway pods selected by '{selector}', found: {:?}",
@@ -746,13 +834,14 @@ async fn gateway_pod_failover_preserves_sandbox_session_and_workspace() {
         .name
         .clone();
     let port = reserve_loopback_port();
-    let mut initial_forward = port_forward_gateway_pod(&namespace, &initial_pod, port).await;
+    let mut initial_forward =
+        port_forward_gateway_pod(&gateway_namespace, &initial_pod, port).await;
     // Retain an independent connection to the replica that will survive the
     // failure. It is deliberately separate from the stable client endpoint so
     // cleanup and its verification never fall back to a Service or Route.
     let cleanup_port = reserve_loopback_port();
     let mut surviving_forward =
-        port_forward_gateway_pod(&namespace, &surviving_pod, cleanup_port).await;
+        port_forward_gateway_pod(&gateway_namespace, &surviving_pod, cleanup_port).await;
 
     let script = format!(
         "printf '%s\\n' '{SENTINEL}' > /sandbox/.odh-ha-sentinel; session_id=$(cat /proc/sys/kernel/random/uuid); while :; do printf '%s:%s:%s\\n' '{OUTPUT_MARKER}' \"$session_id\" \"$(date +%s)\"; sleep 1; done"
@@ -761,7 +850,8 @@ async fn gateway_pod_failover_preserves_sandbox_session_and_workspace() {
     // Keep ownership of the sandbox here so every assertion failure still
     // reaches awaited cleanup before the test unwinds.
     let scenario = AssertUnwindSafe(run_failover_scenario(
-        &namespace,
+        &gateway_namespace,
+        &sandbox_namespace,
         &selector,
         &initial_pod,
         &surviving_pod,
@@ -771,13 +861,46 @@ async fn gateway_pod_failover_preserves_sandbox_session_and_workspace() {
     .catch_unwind()
     .await;
 
-    let cleanup = sandbox.cleanup(&surviving_forward.endpoint).await;
+    // Do not reuse the tunnel that sat idle during failover: `oc port-forward`
+    // can exit or stall without affecting the session path. Keep it alive
+    // while creating a fresh tunnel on a separate local port, so it remains a
+    // best-effort cleanup path if the replacement cannot be established.
+    let refreshed = AssertUnwindSafe(port_forward_gateway_pod(
+        &gateway_namespace,
+        &surviving_pod,
+        reserve_loopback_port(),
+    ))
+    .catch_unwind()
+    .await;
+    let cleanup = match refreshed {
+        Ok(forward) => {
+            stop_port_forward(&mut surviving_forward).await;
+            surviving_forward = forward;
+            sandbox.cleanup(&surviving_forward.endpoint).await
+        }
+        Err(_) => {
+            eprintln!(
+                "could not establish a fresh port-forward to {surviving_pod} for cleanup; \
+                 attempting cleanup through the original tunnel"
+            );
+            match sandbox.cleanup(&surviving_forward.endpoint).await {
+                Ok(()) => Err(format!(
+                    "could not establish a fresh port-forward to {surviving_pod} for cleanup; \
+                     sandbox was deleted through the original tunnel"
+                )),
+                Err(error) => Err(format!(
+                    "could not establish a fresh port-forward to {surviving_pod} for cleanup; \
+                     cleanup through the original tunnel also failed: {error}"
+                )),
+            }
+        }
+    };
     match scenario {
         Ok(pod_selector) => {
             cleanup.expect("delete sandbox through the surviving gateway pod");
             assert_sandbox_deleted(
                 &surviving_forward.endpoint,
-                &namespace,
+                &sandbox_namespace,
                 &sandbox.name,
                 &pod_selector,
             )
