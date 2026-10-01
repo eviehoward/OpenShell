@@ -18,7 +18,9 @@ e2e/rust/tests/odh/
 ├── main.rs                    # crate root, declares helper + tier modules, gated on feature "e2e-odh"
 ├── odh_harness/               # fork-local shared test helpers (see "Shared test helpers")
 │   ├── mod.rs
-│   └── oc.rs                   # `oc` command builder (honors active kube context) + JSON runner
+│   ├── oc.rs                   # `oc` command builder (honors active kube context) + JSON runner
+│   ├── sandbox.rs              # sandbox CR helpers, including pod-selector resolution
+│   └── selinux.rs              # OpenShift SELinux audit helpers
 ├── smoke/                     # Smoke tier: component-level critical tests
 │   ├── mod.rs
 │   ├── gateway.rs              # gateway reachability
@@ -62,6 +64,9 @@ plain module is enough — no new crate and no workspace change.
 - `odh_harness::selinux::SelinuxAudit` — an opt-in scenario guard that detects
   OpenShift, requires every Ready worker to report `Enforcing`, records
   node-local audit cutoffs, and rejects OpenShell AVCs on completion.
+- `odh_harness::sandbox::sandbox_pod_selector()` — resolves a sandbox custom
+  resource's reported workload selector so tests can find its controller-owned
+  pod.
 
 Put ODH-specific shared helpers here (the `oc` builder and node-level SELinux
 checks), and reuse them rather than
@@ -248,7 +253,9 @@ see below. For RHOAI images, use
 too if your deployment doesn't use the defaults (`openshell`/`openshell`).
 The Quay deployment script sets
 `sandbox.image.pullPolicy=IfNotPresent`; other deployments must
-configure it themselves.
+configure it themselves. Set `SANDBOX_NAMESPACE` only when Sandbox
+custom resources and workload Pods run in a namespace separate from the
+gateway.
 
 ### SELinux-enforcing OCP validation
 
@@ -283,8 +290,7 @@ regular test in the `odh` binary. The smoke, ODH, and full filters include it.
 Tier 1–3 filters include it alongside their assigned tests so one nextest run
 and one JUnit report cover the whole tier. `SKIP_IMAGE_PROVENANCE=1` excludes
 it from Tier 1–3 when a local deployment cannot meet the image requirements.
-An empty tier fails instead of passing with an empty report. Tier 3 currently
-has no scenarios, so skipping image provenance makes it fail.
+An empty tier fails instead of passing with an empty report.
 
 ## Image provenance verification
 
@@ -317,6 +323,9 @@ ALLOWED_IMAGE_REGISTRY_PREFIXES="quay.io/opendatahub/,nvcr.io/nvidia/base/" \
   otherwise match a lookalike host (e.g. `registry.redhat.io` would also
   match `registry.redhat.io.attacker.example/image`).
 - `NAMESPACE`/`RELEASE` env vars default to `openshell`/`openshell`.
+  `SANDBOX_NAMESPACE` defaults to the resolved gateway namespace and selects
+  Sandbox custom resources and workload Pods; `NAMESPACE` selects gateway
+  resources.
 - The check is a registry-prefix allowlist, not an exact image/digest match.
   It checks each observed image against the configured allowed prefixes.
 - The `imagePullPolicy: IfNotPresent` check applies to every container,
