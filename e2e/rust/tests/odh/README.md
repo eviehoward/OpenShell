@@ -231,7 +231,9 @@ ALLOWED_IMAGE_REGISTRY_PREFIXES="quay.io/opendatahub/,ghcr.io/nvidia/openshell-c
 
 `ALLOWED_IMAGE_REGISTRY_PREFIXES` is required by the image provenance test —
 see below. Set `NAMESPACE`/`RELEASE` too if your deployment doesn't use the
-defaults (`openshell`/`openshell`). The Helm chart's
+defaults (`openshell`/`openshell`). Set `SANDBOX_NAMESPACE` only when Sandbox
+custom resources and workload Pods run in a namespace separate from the
+gateway. The Helm chart's
 `server.sandboxImagePullPolicy` must also be set to `IfNotPresent` (it
 defaults to `""`, i.e. Kubernetes' own default of `Always` for the
 `:latest`-tagged sandbox image) — see below.
@@ -311,6 +313,9 @@ ALLOWED_IMAGE_REGISTRY_PREFIXES="quay.io/opendatahub/,ghcr.io/nvidia/openshell-c
   otherwise match a lookalike host (e.g. `registry.redhat.io` would also
   match `registry.redhat.io.attacker.example/image`).
 - `NAMESPACE`/`RELEASE` env vars default to `openshell`/`openshell`.
+  `SANDBOX_NAMESPACE` defaults to the resolved gateway namespace and selects
+  Sandbox custom resources and workload Pods; `NAMESPACE` selects gateway
+  resources.
 - The check is a registry-prefix allowlist, not an exact image/digest match.
   The allowlist is explicit about both the upstream gateway images and the
   upstream sandbox image.

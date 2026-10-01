@@ -15,16 +15,22 @@ use tokio::io::AsyncWriteExt as _;
 
 const DEFAULT_DEPLOYMENT_NAME: &str = "openshell";
 
-/// Resolves the namespace used by the ODH deployment under test.
+/// Resolves the namespace containing gateway resources for the ODH deployment.
 ///
-/// The explicit sandbox namespace takes precedence for compatibility with
-/// existing ODH deployment environments. The remaining names match the
-/// standard ODH and Kubernetes e2e configuration variables.
-pub fn namespace() -> String {
-    std::env::var("SANDBOX_NAMESPACE")
-        .or_else(|_| std::env::var("NAMESPACE"))
+/// The names match the standard ODH and Kubernetes e2e configuration
+/// variables.
+pub fn gateway_namespace() -> String {
+    std::env::var("NAMESPACE")
         .or_else(|_| std::env::var("OPENSHELL_E2E_KUBE_NAMESPACE"))
         .unwrap_or_else(|_| DEFAULT_DEPLOYMENT_NAME.to_string())
+}
+
+/// Resolves the namespace containing Sandbox custom resources and workload Pods.
+///
+/// Sandbox resources normally share the gateway namespace. Set
+/// `SANDBOX_NAMESPACE` when the compute driver uses a separate namespace.
+pub fn sandbox_namespace() -> String {
+    std::env::var("SANDBOX_NAMESPACE").unwrap_or_else(|_| gateway_namespace())
 }
 
 /// Resolves the Helm release name used by the ODH deployment under test.
