@@ -18,7 +18,7 @@ use serde_json::Value;
 
 use openshell_e2e::harness::sandbox::SandboxGuard;
 
-use crate::odh_harness::oc::{oc_command, oc_json};
+use crate::odh_harness::oc::{namespace, oc_command, oc_json, release};
 
 fn allowed_prefixes() -> Vec<String> {
     std::env::var("ALLOWED_IMAGE_REGISTRY_PREFIXES")
@@ -108,8 +108,8 @@ fn parse_supervisor_image(gateway_toml: &str) -> Option<String> {
 
 #[tokio::test]
 async fn test_sandbox_gateway_supervisor_images() {
-    let namespace = std::env::var("NAMESPACE").unwrap_or_else(|_| "openshell".to_string());
-    let release = std::env::var("RELEASE").unwrap_or_else(|_| "openshell".to_string());
+    let namespace = namespace();
+    let release = release();
     let allowed = allowed_prefixes();
 
     let mut errors = Vec::new();

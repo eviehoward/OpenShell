@@ -13,6 +13,40 @@ use std::process::Stdio;
 use serde_json::Value;
 use tokio::io::AsyncWriteExt as _;
 
+const DEFAULT_DEPLOYMENT_NAME: &str = "openshell";
+
+/// Resolves the namespace used by the ODH deployment under test.
+///
+/// The explicit sandbox namespace takes precedence for compatibility with
+/// existing ODH deployment environments. The remaining names match the
+/// standard ODH and Kubernetes e2e configuration variables.
+pub fn namespace() -> String {
+    std::env::var("SANDBOX_NAMESPACE")
+        .or_else(|_| std::env::var("NAMESPACE"))
+        .or_else(|_| std::env::var("OPENSHELL_E2E_KUBE_NAMESPACE"))
+        .unwrap_or_else(|_| DEFAULT_DEPLOYMENT_NAME.to_string())
+}
+
+/// Resolves the Helm release name used by the ODH deployment under test.
+pub fn release() -> String {
+    std::env::var("RELEASE")
+        .or_else(|_| std::env::var("OPENSHELL_E2E_KUBE_RELEASE"))
+        .unwrap_or_else(|_| DEFAULT_DEPLOYMENT_NAME.to_string())
+}
+
+/// Returns whether a Kubernetes Pod JSON object is Running and Ready.
+pub fn pod_is_ready(pod: &Value) -> bool {
+    pod["status"]["phase"].as_str() == Some("Running")
+        && pod["status"]["conditions"]
+            .as_array()
+            .is_some_and(|conditions| {
+                conditions.iter().any(|condition| {
+                    condition["type"].as_str() == Some("Ready")
+                        && condition["status"].as_str() == Some("True")
+                })
+            })
+}
+
 /// Output from an `oc` invocation.
 pub struct OcOutput {
     pub success: bool,
@@ -21,10 +55,6 @@ pub struct OcOutput {
 }
 
 impl OcOutput {
-    pub fn contains(&self, needle: &str) -> bool {
-        self.stdout.contains(needle) || self.stderr.contains(needle)
-    }
-
     pub fn diagnostics(&self) -> String {
         format!("stdout:\n{}\nstderr:\n{}", self.stdout, self.stderr)
     }
@@ -39,20 +69,6 @@ impl OcOutput {
 /// context. Callers append the subcommand and its arguments with `.args(...)`.
 pub fn oc_command() -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new("oc");
-    if let Ok(context) = std::env::var("OPENSHELL_E2E_KUBE_CONTEXT_ACTIVE")
-        && !context.is_empty()
-    {
-        cmd.args(["--context", &context]);
-    }
-    cmd
-}
-
-/// Builds a synchronous `oc` command targeting the active e2e cluster.
-///
-/// This is intended for best-effort cleanup in `Drop` implementations, where
-/// an async process cannot be awaited.
-pub fn oc_std_command() -> std::process::Command {
-    let mut cmd = std::process::Command::new("oc");
     if let Ok(context) = std::env::var("OPENSHELL_E2E_KUBE_CONTEXT_ACTIVE")
         && !context.is_empty()
     {
@@ -290,8 +306,31 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        pod_node_and_uid, pod_uid_cgroup_form, sandbox_id_from_json, supervisor_pod_from_json,
+        pod_is_ready, pod_node_and_uid, pod_uid_cgroup_form, sandbox_id_from_json,
+        supervisor_pod_from_json,
     };
+
+    #[test]
+    fn recognizes_only_running_ready_pods() {
+        assert!(pod_is_ready(&json!({
+            "status": {
+                "phase": "Running",
+                "conditions": [{"type": "Ready", "status": "True"}]
+            }
+        })));
+        assert!(!pod_is_ready(&json!({
+            "status": {
+                "phase": "Pending",
+                "conditions": [{"type": "Ready", "status": "True"}]
+            }
+        })));
+        assert!(!pod_is_ready(&json!({
+            "status": {
+                "phase": "Running",
+                "conditions": [{"type": "Ready", "status": "False"}]
+            }
+        })));
+    }
 
     #[test]
     fn resolves_sandbox_id_from_named_sandbox() {
