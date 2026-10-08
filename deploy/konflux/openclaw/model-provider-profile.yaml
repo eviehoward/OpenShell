@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Example provider profile for the OpenClaw reference image
-# (odh-openshell-openclaw). OpenShell does not load it; copy it, edit it and
-# import it explicitly:
+# (odh-openshell-sandbox-openclaw). OpenShell does not load it; copy it, edit
+# it and import it explicitly:
 #   openshell profile lint   -f model-provider-profile.yaml
 #   openshell profile import -f model-provider-profile.yaml --global
 #   openshell provider create --name model --type openclaw-model \
@@ -15,7 +15,7 @@
 # get the credential.
 #
 # Client binaries:   node (OpenClaw runs on the image's Node.js).
-# Reference layout:  /usr/bin/node in odh-openshell-openclaw.
+# Reference layout:  /usr/bin/node in odh-openshell-sandbox-openclaw.
 # Credential scope:  CUSTOM_API_KEY, sent as a bearer authorization header to
 #                    the host:port below and nowhere else. openclaw-start
 #                    stores it in the OpenClaw config as an env reference, so

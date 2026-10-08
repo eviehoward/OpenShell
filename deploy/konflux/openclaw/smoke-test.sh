@@ -5,8 +5,8 @@
 
 set -euo pipefail
 
-# Contract smoke tests for a built odh-openshell-openclaw image. Called by
-# build-local.sh after a build; also runnable by hand.
+# Contract smoke tests for a built odh-openshell-sandbox-openclaw image.
+# Called by build-local.sh after a build; also runnable by hand.
 #
 # Usage: smoke-test.sh <image>
 #
@@ -102,8 +102,8 @@ got_harness_version=$(label io.openshell.harness.version)
 got_s2i1=$(label io.openshift.s2i.scripts-url)
 got_s2i2=$(label io.s2i.scripts-url)
 got_license=$(label com.redhat.license_terms)
-if [[ "${got_name}" == "opendatahub/odh-openshell-openclaw" \
-    && "${got_component}" == "odh-openshell-openclaw-container" \
+if [[ "${got_name}" == "opendatahub/odh-openshell-sandbox-openclaw" \
+    && "${got_component}" == "odh-openshell-sandbox-openclaw-container" \
     && "${got_harness}" == "openclaw" \
     && -n "${got_harness_version}" \
     && -z "${got_s2i1}" \

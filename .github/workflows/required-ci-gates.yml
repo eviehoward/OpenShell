@@ -281,6 +281,9 @@ jobs:
           # evaluate_workflow's verify_mirror would pend these gates forever downstream,
           # since nothing creates that mirror branch here. Mark them passing directly.
           post_status "OpenShell / Branch Checks" success "Disabled in downstream fork (job requires runners unavailable downstream)" "$STATUS_TARGET_URL"
-          evaluate_workflow "OpenShell / E2E" "branch-e2e.yml" "Branch E2E Checks" "test:e2e" "Core E2E result"
-          evaluate_workflow "OpenShell / GPU E2E" "branch-e2e.yml" "Branch E2E Checks" "test:e2e-gpu" "GPU E2E result"
+          # E2E is opt-in on PRs and does not run for merge groups.
+          if [ "$CONTEXT_KIND" != "merge_group" ]; then
+            evaluate_workflow "OpenShell / E2E" "branch-e2e.yml" "Branch E2E Checks" "test:e2e" "Core E2E result"
+            evaluate_workflow "OpenShell / GPU E2E" "branch-e2e.yml" "Branch E2E Checks" "test:e2e-gpu" "GPU E2E result"
+          fi
           post_status "OpenShell / Helm Lint" success "Disabled in downstream fork (job requires runners unavailable downstream)" "$STATUS_TARGET_URL"

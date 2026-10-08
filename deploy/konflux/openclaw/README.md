@@ -1,6 +1,6 @@
 # OpenClaw reference harness image
 
-`odh-openshell-openclaw` runs the [OpenClaw](https://github.com/openclaw/openclaw) agent harness inside an OpenShell sandbox. It is built from `deploy/docker/Dockerfile.konflux.openclaw` and the files in this directory.
+`odh-openshell-sandbox-openclaw` runs the [OpenClaw](https://github.com/openclaw/openclaw) agent harness inside an OpenShell sandbox. It is built from `deploy/docker/Dockerfile.konflux.openclaw` and the files in this directory.
 
 ## Status
 
@@ -42,7 +42,7 @@ Create an interactive sandbox. On first run, `openclaw-start` onboards OpenClaw 
 
 ```shell
 openshell sandbox create --name openclaw \
-  --from quay.io/opendatahub/odh-openshell-openclaw@sha256:<digest> \
+  --from quay.io/opendatahub/odh-openshell-sandbox-openclaw@sha256:<digest> \
   --provider model \
   --env MODEL_BASE_URL=http://<svc>.<ns>.svc.cluster.local:8000/v1 \
   --env MODEL_ID=<model-id> \
@@ -53,7 +53,7 @@ For headless use, onboard in a detached sandbox and run one-shot turns with `age
 
 ```shell
 openshell sandbox create --name openclaw \
-  --from quay.io/opendatahub/odh-openshell-openclaw@sha256:<digest> \
+  --from quay.io/opendatahub/odh-openshell-sandbox-openclaw@sha256:<digest> \
   --provider model \
   --env MODEL_BASE_URL=http://<svc>.<ns>.svc.cluster.local:8000/v1 \
   --env MODEL_ID=<model-id> \
@@ -118,7 +118,7 @@ kind: ImageSetConfiguration
 apiVersion: mirror.openshift.io/v2alpha1
 mirror:
   additionalImages:
-    - name: quay.io/opendatahub/odh-openshell-openclaw@sha256:<digest>
+    - name: quay.io/opendatahub/odh-openshell-sandbox-openclaw@sha256:<digest>
 ```
 
 ## Build your own on UBI
@@ -153,7 +153,7 @@ The npm inputs come from AIPCC agentic commit dc756bc3 (OpenClaw 2026.9.5). AIPC
 
 ## Konflux
 
-The Tekton pipelines follow once the component is registered in odh-konflux-central. The build is hermetic for linux/x86_64 and linux/arm64 with this prefetch input:
+odh-konflux-central owns the Tekton pipelines. Its onboarder sync opens a PR here that copies `pipelineruns/openshell/odh-openshell-sandbox-openclaw-*.yaml` over `.tekton/`, so change their params there and run the sync. Merges to `main` publish `odh-stable`, and each `v*-rhaiv.*` tag rebuilds the same pinned OpenClaw release under that tag; only the commit named in [Status](#status) is verified. The build is hermetic for linux/x86_64 and linux/arm64 with this prefetch input:
 
 ```json
 [{"type": "npm", "path": "deploy/konflux/openclaw"}, {"type": "rpm", "path": "deploy/konflux/openclaw"}]
