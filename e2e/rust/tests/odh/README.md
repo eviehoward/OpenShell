@@ -136,20 +136,19 @@ skips in the JUnit report.
   PostgreSQL Secret, and a configured CLI gateway name. The test discovers two
   ready gateway pods and opens its own loopback `oc port-forward` to direct the
   initial create and session to one pod. It confirms the session disconnects
-  when that pod is deleted, then
-  reconnects through a second port-forward to the pre-existing surviving
-  replica. This pins the check to that replica and does not exercise the
-  configured Service or Route endpoint. The workload heartbeat includes a
-  UUID generated at process start; reconnect must report the same UUID, so a
-  restarted workload does not satisfy the session check. Set
-  `OPENSHELL_GATEWAY` to the configured gateway name; it also selects the
+  when that pod is deleted, then reconnects through a second port-forward to
+  the pre-existing surviving replica. This pins the check to that replica and
+  does not exercise the configured Service or Route endpoint. The workload
+  heartbeat includes a UUID generated at process start; reconnect must report
+  the same UUID, so a restarted workload does not satisfy the session check.
+  Set `OPENSHELL_GATEWAY` to the configured gateway name; it also selects the
   gateway used by the image-provenance check that runs with every tier.
   `OPENSHELL_ODH_HA_GATEWAY_NAME` remains a compatibility fallback when
   `OPENSHELL_GATEWAY` is not set. The test identity needs permission to get
   the PostgreSQL Secret referenced by `OPENSHELL_DB_URL`, create pod
-  port-forwards, and delete gateway pods. The test
-  deletes a gateway pod only when `OPENSHELL_ODH_HA_FAILOVER=1` is set. Its
-  default pod selector is the Helm
+  port-forwards, and delete gateway pods. The test deletes a gateway pod only
+  when `OPENSHELL_ODH_HA_FAILOVER=1` is set. The test is reported as skipped
+  when that opt-in is absent. Its default pod selector is the Helm
   `app.kubernetes.io/name=openshell,app.kubernetes.io/instance=<RELEASE>`
   selector; override it with `OPENSHELL_ODH_HA_GATEWAY_SELECTOR` for a renamed
   chart deployment.
@@ -192,7 +191,7 @@ context you happen to have active elsewhere. This means:
 | `mise run e2e:odh:tier3` | Tier 3: mapped upstream tests + ODH `tier3::` + image provenance |
 | `cargo nextest run --manifest-path e2e/rust/Cargo.toml --features e2e-odh --test odh -E 'test(=module::test_name)'` | A single ODH test function |
 
-The destructive HA failover scenario is disabled by default. Run it only
+The destructive HA failover scenario is skipped by default. Run it only
 against a disposable or explicitly approved HA deployment:
 
 ```bash
@@ -218,6 +217,7 @@ OPENSHELL_GATEWAY=<configured-gateway-name> \
 OPENSHELL_ODH_HA_FAILOVER=1 \
 e2e/with-kube-gateway.sh cargo test --manifest-path e2e/rust/Cargo.toml \
   --features e2e-odh --test odh -- \
+  --include-ignored \
   tier3::gateway_failover::gateway_pod_failover_preserves_sandbox_session_and_workspace \
   --exact --nocapture
 ```
