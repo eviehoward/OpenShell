@@ -3,10 +3,11 @@
 
 //! Gateway failover coverage for an external-PostgreSQL HA deployment.
 //!
-//! This test deletes a gateway pod, so it runs only with
-//! `OPENSHELL_ODH_HA_FAILOVER=1`. The test keeps the client's local endpoint
-//! stable while switching its pod port-forward from the deleted replica to a
-//! surviving replica, then verifies that the original client reconnects.
+//! This test is ignored by default because it deletes a gateway pod. The ODH
+//! tier runner runs it only with `OPENSHELL_ODH_HA_FAILOVER=1`. The test keeps
+//! the client's local endpoint stable while switching its pod port-forward
+//! from the deleted replica to a surviving replica, then verifies that the
+//! original client reconnects.
 
 use std::net::TcpListener;
 use std::panic::AssertUnwindSafe;
@@ -794,12 +795,13 @@ async fn run_failover_scenario(
 }
 
 #[tokio::test]
+#[ignore = "destructive HA failover; set OPENSHELL_ODH_HA_FAILOVER=1 to run"]
 async fn gateway_pod_failover_preserves_sandbox_session_and_workspace() {
     // preflight checks
-    if std::env::var(ENABLE_ENV).as_deref() != Ok("1") {
-        eprintln!("skipping destructive HA failover test; set {ENABLE_ENV}=1 to enable it");
-        return;
-    }
+    assert!(
+        matches!(std::env::var(ENABLE_ENV).as_deref(), Ok("1")),
+        "set {ENABLE_ENV}=1 before explicitly running this destructive HA failover test"
+    );
     if !is_openshift().await.unwrap_or_else(|error| {
         panic!("cannot determine whether the active cluster is OpenShift: {error}")
     }) {
