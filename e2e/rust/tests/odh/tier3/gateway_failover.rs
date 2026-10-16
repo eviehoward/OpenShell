@@ -39,6 +39,10 @@ const SESSION_TIMEOUT: Duration = Duration::from_secs(60);
 const CREATE_TIMEOUT: Duration = Duration::from_secs(300);
 const CREATE_RECOVERY_TIMEOUT: Duration = Duration::from_secs(120);
 const CLI_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+const ROUTE_STATUS_TIMEOUT: Duration = Duration::from_secs(120);
+// Allow the pod's default 30-second termination grace period while staying
+// below the CLI's one-minute reconnect window.
+const PORT_FORWARD_EXIT_TIMEOUT: Duration = Duration::from_secs(45);
 const SANDBOX_DELETION_TIMEOUT: Duration = Duration::from_secs(300);
 const SESSION_START_ATTEMPTS: usize = 3;
 // The CLI only opens its reconnect window after an attachment has survived
@@ -162,14 +166,18 @@ async fn wait_for_gateway_pod_ready(namespace: &str, selector: &str, pod_name: &
     );
 } // continuously polls OpenShift until a specific pre-existing gateway is ready
 
-fn direct_gateway_command(endpoint: &str) -> tokio::process::Command {
-    let gateway_name = std::env::var("OPENSHELL_GATEWAY")
+fn configured_gateway_name() -> String {
+    std::env::var("OPENSHELL_GATEWAY")
         .or_else(|_| std::env::var(GATEWAY_NAME_ENV))
         .unwrap_or_else(|_| {
             panic!(
                 "set OPENSHELL_GATEWAY or {GATEWAY_NAME_ENV} to the configured mTLS gateway name"
             )
-        });
+        })
+}
+
+fn direct_gateway_command(endpoint: &str) -> tokio::process::Command {
+    let gateway_name = configured_gateway_name();
     let mut command = openshell_cmd();
     // The port-forward reaches the gateway directly, so use TLS rather than
     // plaintext HTTP. Keep the configured gateway name so the CLI finds its
@@ -179,6 +187,56 @@ fn direct_gateway_command(endpoint: &str) -> tokio::process::Command {
         .arg("--gateway-endpoint")
         .arg(endpoint);
     command
+}
+
+async fn assert_route_client_connected(phase: &str) {
+    let mut last_observation = "no status response received".to_string();
+    let result = timeout(ROUTE_STATUS_TIMEOUT, async {
+        loop {
+            let gateway_name = configured_gateway_name();
+            let mut command = openshell_cmd();
+            command
+                .args(["--gateway", &gateway_name, "status", "--output", "json"])
+                // A direct endpoint would bypass the Route configured for this
+                // gateway and make this assertion meaningless.
+                .env_remove("OPENSHELL_GATEWAY_ENDPOINT")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+            let output = command
+                .output()
+                .await
+                .expect("run openshell status through the configured Route");
+            match serde_json::from_slice::<Value>(&output.stdout) {
+                Ok(status) => {
+                    let connection = status["status"].as_str();
+                    let authentication = status["authentication"]["status"].as_str();
+                    if output.status.success()
+                        && connection == Some("connected")
+                        && authentication == Some("authenticated")
+                    {
+                        return;
+                    }
+                    last_observation = format!(
+                        "exit {:?}, status {connection:?}, authentication {authentication:?}",
+                        output.status.code()
+                    );
+                }
+                Err(error) => {
+                    last_observation = format!(
+                        "exit {:?}, invalid status JSON: {error}",
+                        output.status.code()
+                    );
+                }
+            }
+            sleep(POLL_INTERVAL).await;
+        }
+    })
+    .await;
+    assert!(
+        result.is_ok(),
+        "authenticated openshell status through the configured Route did not connect {phase} gateway failover within {ROUTE_STATUS_TIMEOUT:?}; last observation: {last_observation}"
+    );
 }
 
 async fn assert_ha_deployment(namespace: &str, selector: &str) {
@@ -729,10 +787,17 @@ async fn run_failover_scenario(
     )
     .await;
 
-    // Ensure the surviving replica is ready before dropping the client's
-    // transport, then submit deletion without spending its reconnect window
-    // waiting for Kubernetes to finish terminating the initial pod.
+    // Ensure the surviving replica and original tunnel are live before
+    // submitting the pod deletion that must cause the transport loss.
     wait_for_gateway_pod_ready(gateway_namespace, selector, surviving_pod).await;
+    assert!(
+        initial_forward
+            .child
+            .try_wait()
+            .expect("poll initial gateway pod port-forward before deletion")
+            .is_none(),
+        "initial gateway pod port-forward exited before pod deletion; failover was not exercised"
+    );
     let deleted = oc_with_timeout(
         &[
             "delete",
@@ -753,9 +818,17 @@ async fn run_failover_scenario(
         deleted.status_summary()
     );
 
-    // Keep the endpoint stable while replacing its direct backend. This lets
-    // the original client exercise its bounded reconnect behavior.
-    stop_port_forward(initial_forward).await;
+    // Let pod termination close the original transport. Killing our own
+    // forward here would allow a tunnel switch to masquerade as pod failover.
+    // Bound the wait so a stalled forward fails rather than consuming the
+    // client's entire reconnect window.
+    timeout(PORT_FORWARD_EXIT_TIMEOUT, initial_forward.child.wait())
+        .await
+        .expect(
+            "initial pod port-forward did not exit after pod deletion within the reconnect window",
+        )
+        .expect("wait for initial pod port-forward to exit after pod deletion");
+    // Reuse the same endpoint only after the old forward exits naturally.
     let mut reconnect_forward =
         port_forward_gateway_pod(gateway_namespace, surviving_pod, initial_forward.port).await;
     // Read the baseline from the sandbox clock. Heartbeat timestamps use the
@@ -791,6 +864,10 @@ async fn run_failover_scenario(
         "workspace sentinel was lost after gateway failover: {sentinel}"
     );
     stop_port_forward(&mut reconnect_forward).await;
+    // This uses the registered gateway without a direct endpoint override, so
+    // it verifies authenticated CLI traffic through the configured Route after
+    // the failed replica has been replaced.
+    assert_route_client_connected("after").await;
     assert_sandbox_workload_is_live(sandbox_namespace, &sandbox.name).await
 }
 
@@ -823,6 +900,9 @@ async fn gateway_pod_failover_preserves_sandbox_session_and_workspace() {
             .map(|pod| (&pod.name, pod.ready))
             .collect::<Vec<_>>(),
     ); // asserts at least 2 ready replicas exist
+    // This is intentionally separate from the port-forward path below: it
+    // checks the registered, authenticated CLI route before failover.
+    assert_route_client_connected("before").await;
     let initial_pod = pods
         .iter()
         .find(|pod| pod.ready)
