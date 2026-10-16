@@ -1084,12 +1084,17 @@ pub async fn gateway_add(
 
     if remote.is_some() || local {
         // mTLS gateway (remote or local).
-        let imported_mtls_dir = if local {
+        // A caller may have provisioned a gateway-specific bundle already
+        // (for example, an OpenShift deployment that extracted its client
+        // Secret). Keep that explicit bundle instead of overwriting it with a
+        // package-managed local gateway bundle.
+        let explicit_mtls_bundle = mtls_certs_exist_for_gateway(name);
+        let imported_mtls_dir = if local && !explicit_mtls_bundle {
             import_local_package_mtls_bundle(name)?
         } else {
             None
         };
-        let certs_on_disk = imported_mtls_dir.is_some() || mtls_certs_exist_for_gateway(name);
+        let certs_on_disk = explicit_mtls_bundle || imported_mtls_dir.is_some();
         if !certs_on_disk {
             return Err(miette::miette!(
                 "mTLS certificates for gateway '{name}' were not found.\n\
@@ -2014,6 +2019,58 @@ mod tests {
                 assert_eq!(
                     fs::read_to_string(mtls.join("tls.key")).unwrap(),
                     "client key",
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn gateway_add_local_preserves_existing_gateway_mtls_bundle() {
+        let tmpdir = tempfile::tempdir().expect("create temp dir");
+        let package_tls = tmpdir.path().join("package-tls");
+        fs::create_dir_all(package_tls.join("client")).expect("create package TLS dir");
+        fs::write(package_tls.join("ca.crt"), "package ca").expect("write package ca");
+        fs::write(package_tls.join("client/tls.crt"), "package cert").expect("write package cert");
+        fs::write(package_tls.join("client/tls.key"), "package key").expect("write package key");
+
+        with_tmp_xdg_env(
+            tmpdir.path(),
+            Environment::new().set("OPENSHELL_LOCAL_TLS_DIR", &package_tls),
+            |config_dir| {
+                let mtls = config_dir.join("openshell/gateways/cluster/mtls");
+                fs::create_dir_all(&mtls).expect("create explicit mTLS dir");
+                fs::write(mtls.join("ca.crt"), "cluster ca").expect("write cluster ca");
+                fs::write(mtls.join("tls.crt"), "cluster cert").expect("write cluster cert");
+                fs::write(mtls.join("tls.key"), "cluster key").expect("write cluster key");
+
+                let runtime = tokio::runtime::Runtime::new().expect("create runtime");
+                runtime.block_on(async {
+                    gateway_add(
+                        "https://gateway.example.com",
+                        Some("cluster"),
+                        None,
+                        true,
+                        None,
+                        "openshell-cli",
+                        None,
+                        None,
+                        false,
+                    )
+                    .await
+                    .expect("register gateway with explicit mTLS bundle");
+                });
+
+                assert_eq!(
+                    fs::read_to_string(mtls.join("ca.crt")).unwrap(),
+                    "cluster ca"
+                );
+                assert_eq!(
+                    fs::read_to_string(mtls.join("tls.crt")).unwrap(),
+                    "cluster cert"
+                );
+                assert_eq!(
+                    fs::read_to_string(mtls.join("tls.key")).unwrap(),
+                    "cluster key"
                 );
             },
         );

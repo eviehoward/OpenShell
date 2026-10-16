@@ -113,11 +113,12 @@ Tier 1 checks the process-supervisor SELinux label and its mapped upstream
 tests. Tier 2 runs `workspace_lifecycle`, ODH Tier 2, and image provenance in
 shared mode, then runs `workspace_namespace_managed` against a separate
 managed-mode deployment. The `odh` and `full` tiers use the same shared then
-managed split. Tier 3 includes an opt-in  destructive external-PostgreSQL HA
-gateway failover scenario. Image provenance runs once in each tier's shared
-phase. Smoke and Tier 1/3 use only shared mode. Add Rust scenarios by creating
-a `.rs` file under the tier's directory and declaring it with a `mod` line in
-that tier's `mod.rs`; add its selector to the corresponding tier table or mode
+managed split. Tier 3 uses shared mode by default; when
+`OPENSHELL_ODH_HA_FAILOVER=1`, it selects its destructive external-PostgreSQL
+HA phase instead. Image provenance runs once in each selected tier phase.
+Smoke and Tier 1 use only shared mode. Add Rust scenarios by creating a `.rs`
+file under the tier's directory and declaring it with a `mod` line in that
+tier's `mod.rs`; add its selector to the corresponding tier table or mode
 extension.
 
 To add a Helm-overlay mode, define its validated values paths and expected
@@ -160,10 +161,11 @@ Excluded tests do not appear as passes or skips in the JUnit report.
   runs and HTML reports.
 - The local task builds `openshell-cli` when `OPENSHELL_BIN` is unset. Set
   `OPENSHELL_BIN` to use another CLI binary.
-- For `tier3::gateway_failover`, a deployment installed with
-  `deploy/helm/openshell/ci/values-high-availability.yaml`, an external
-  PostgreSQL Secret, and a configured CLI gateway name. The test discovers two
-  ready gateway pods and opens its own loopback `oc port-forward` to direct the
+- For `tier3::gateway_failover`, permission to create the fixture PostgreSQL
+  deployment and its Secret, run `oc adm policy add-scc-to-user anyuid`, and
+  delete gateway pods. With `OPENSHELL_ODH_HA_FAILOVER=1`, the Tier 3 runner
+  deploys the external-PostgreSQL HA gateway automatically. The test discovers
+  two ready gateway pods and opens its own loopback `oc port-forward` to direct the
   initial create and session to one pod. It confirms the session disconnects
   when that pod is deleted, then reconnects through a second port-forward to
   the pre-existing surviving replica. This pins the check to that replica and
@@ -220,12 +222,17 @@ context you happen to have active elsewhere. This means:
 | `mise run e2e:odh:tier3` | Tier 3: mapped upstream tests + ODH `tier3::` + image provenance |
 | `cargo nextest run --manifest-path e2e/rust/Cargo.toml --features e2e-odh --test odh -E 'test(=module::test_name)'` | A single ODH test function |
 
-The destructive HA failover scenario is skipped by default. Run it only
-against a disposable or explicitly approved HA deployment:
+The destructive HA failover scenario is skipped by default. With
+`OPENSHELL_ODH_HA_FAILOVER=1`, Tier 3 selects its HA phase, creates the
+external PostgreSQL fixture, deploys two gateway replicas, runs the test, and
+tears down the namespace and fixture afterward:
 
 ```bash
 OPENSHELL_ODH_HA_FAILOVER=1 mise run e2e:odh:tier3
 ```
+
+To attach to an already deployed compatible HA gateway instead, set
+`OPENSHELL_E2E_DEPLOY_GATEWAY=0` as well.
 
 The existing `e2e/with-kube-gateway.sh` wrapper can provision the HA fixture
 in an ephemeral namespace: it installs the chart with the HA values overlay,
@@ -272,13 +279,13 @@ Example, running the Smoke tier against a real cluster:
 umask 077
 oc --kubeconfig ~/.kube/config config view --minify --flatten > kubeconfig
 chmod 600 kubeconfig
-ALLOWED_IMAGE_REGISTRY_PREFIXES="quay.io/opendatahub/,nvcr.io/nvidia/base/" \
+ALLOWED_IMAGE_REGISTRY_PREFIXES="quay.io/opendatahub/,nvcr.io/nvidia/base/,ghcr.io/astral-sh/" \
   mise run e2e:odh:smoke
 ```
 
 `IMAGE_TAG` and `ALLOWED_IMAGE_REGISTRY_PREFIXES` are required by deployment
 and the image provenance test — see below. For RHOAI images, use
-`registry.redhat.io/,nvcr.io/nvidia/base/` instead. The shared entrypoint
+`registry.redhat.io/,nvcr.io/nvidia/base/,ghcr.io/astral-sh/` instead. The shared entrypoint
 generates a DNS-safe `OPENSHELL_E2E_RUN_ID` for each deployed invocation unless
 you provide one. The namespace and Helm release default to `openshell` for
 both shared and managed phases to preserve managed-test compatibility; gateway
@@ -347,7 +354,7 @@ registry, and that no container — including ephemeral containers — has
 regressed away from `imagePullPolicy: IfNotPresent`.
 
 ```bash
-ALLOWED_IMAGE_REGISTRY_PREFIXES="quay.io/opendatahub/,nvcr.io/nvidia/base/" \
+ALLOWED_IMAGE_REGISTRY_PREFIXES="quay.io/opendatahub/,nvcr.io/nvidia/base/,ghcr.io/astral-sh/" \
   cargo test --manifest-path e2e/rust/Cargo.toml --features e2e-odh --test odh \
   -- smoke::image_provenance::
 ```
@@ -363,6 +370,8 @@ ALLOWED_IMAGE_REGISTRY_PREFIXES="quay.io/opendatahub/,nvcr.io/nvidia/base/" \
   - `nvcr.io/nvidia/base/` — the Helm chart's current default workload
     image (`server.sandboxImage`). Include the registry prefix for any
     other workload image selected by the deployment.
+  - `ghcr.io/astral-sh/` — the Agent Sandbox Operator's `agent` and
+    `workspace-init` containers.
 
   A prefix without a trailing `/` is rejected outright, since it could
   otherwise match a lookalike host (e.g. `registry.redhat.io` would also
