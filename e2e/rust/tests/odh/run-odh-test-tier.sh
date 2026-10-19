@@ -52,7 +52,6 @@ fi
 
 junit_xml="${results_dir}/e2e-odh.xml"
 rm -f "${junit_xml}" "${report}" "${report%.xml}.html"
-<<<<<<< HEAD
 config_file="$(mktemp)"
 trap 'rm -f "${config_file}"' EXIT
 "${PYTHON_BIN}" - "${ROOT}/.config/nextest.toml" "${config_file}" "${junit_xml}" <<'PY'
