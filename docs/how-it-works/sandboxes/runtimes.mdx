@@ -96,7 +96,13 @@ openshell sandbox create \
   -- claude
 ```
 
-Driver config is disabled by default. Enable it with `allow_driver_config = true` in the driver's gateway configuration. Attached resources such as volumes must carry operator-approved labels. See [External Resource Admission](/how-it-works/gateways/configuration#external-resource-admission).
+Driver config is disabled by default except for MXC, whose required workload
+command uses driver config. MXC also disables resource label admission by
+default because its host filesystem grants have no trusted label resolver;
+explicitly enabling admission rejects MXC sandbox creates. Enable driver config
+for other drivers with `allow_driver_config = true` in the driver's gateway
+configuration. When resource admission is enabled, attached resources such as
+volumes must carry operator-approved labels. See [External Resource Admission](/how-it-works/gateways/configuration#external-resource-admission).
 
 To pin specific GPUs, pass `cdi_devices` for Docker or Podman, or `gpu_device_ids` for MicroVM, together with `--gpu`:
 
@@ -237,6 +243,12 @@ Registry downloads must match the resolved image digest, including the selected 
 VM sandboxes have no network interface. All traffic flows through the OpenShell supervisor on the host. For networks that require a corporate proxy, the VM driver accepts the same `https_proxy` and `proxy_*` options as Podman. To reach a proxy on the gateway host, use `http://host.openshell.internal:<port>`.
 
 If the gateway is briefly unavailable while a VM starts, its supervisor retries the session connection. The sandbox stays in provisioning until the gateway accepts the session.
+
+### MicroVM Stop Durability
+
+When you run `openshell sandbox stop` while the main process is running, OpenShell terminates the workload and flushes the guest root filesystem before acknowledging termination. The guest waits up to three seconds for the flush. The host allows up to 22 seconds for supervisor shutdown, then up to five seconds to stop the VM.
+
+Flush errors and timeouts produce warnings while shutdown continues. If a signal kills the supervisor, the driver warns that the guest flush was not confirmed and recent writes may be lost. A completed stop does not guarantee persistence after a failed or timed-out flush. This flush does not cover stops after the main process has already exited.
 
 ### MicroVM Mounts
 
