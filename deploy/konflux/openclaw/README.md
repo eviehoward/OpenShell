@@ -8,7 +8,7 @@ This image is an unsupported reference composition. It is published only on quay
 
 ## What's inside
 
-- Base: `registry.access.redhat.com/ubi9/nodejs-24-minimal:9.8`, pinned by digest (Node 24.19.0, npm 11.17.0), for amd64 and arm64.
+- Base: `registry.access.redhat.com/ubi9/nodejs-24-minimal:9.8`, pinned by digest (Node 24.22.1, npm 11.19.1), for amd64 and arm64.
 - OpenClaw 2026.9.5, installed world-readable under `/usr/local/lib/openclaw`, plus `/usr/local/bin/openclaw` and the `openclaw-start` wrapper. The npm closure is the same one Red Hat's internal AIPCC agentic OpenClaw image uses; that image runs it on Node 26.
 - User 1000:1000 (`sandbox`), `HOME=/sandbox`, `WORKDIR /`, no `/sandbox` directory, no ENTRYPOINT and no baked sandbox policy. OpenShell creates and owns the workspace.
 - The `DEFAULT:PQ` system crypto policy, so Node's TLS 1.3 prefers X25519MLKEM768. `python3` is present as a dependency of `crypto-policies-scripts`.
@@ -131,7 +131,7 @@ mirror:
 There is no branded OpenShell base image for RHOAI 3.6. To package another harness, start from stock UBI and keep the same contract:
 
 ```dockerfile
-FROM registry.access.redhat.com/ubi9/ubi-minimal:9.8@sha256:7fbeae18dc9476399f565e68255f602a3374ea8614ba3d14843565131a13ff93
+FROM registry.access.redhat.com/ubi9/ubi-minimal:9.8@sha256:bba2b4bbf0ed15cfe7dd72a1e17ae7d2015a141f306b304e1a2785c41400e39c
 USER 0
 RUN microdnf install -y --nodocs shadow-utils <your-packages> && microdnf clean all && \
     groupadd -g 1000 sandbox && useradd -u 1000 -g 1000 -M -d /sandbox -s /bin/bash sandbox

@@ -284,13 +284,13 @@ arches:
     name: libcom_err
     evr: 1.46.5-8.el9
     sourcerpm: e2fsprogs-1.46.5-8.el9.src.rpm
-  - url: https://cdn-ubi.redhat.com/content/public/ubi/dist/ubi9/9/aarch64/baseos/os/Packages/l/libcurl-7.76.1-40.el9_8.8.aarch64.rpm
+  - url: https://cdn-ubi.redhat.com/content/public/ubi/dist/ubi9/9/aarch64/baseos/os/Packages/l/libcurl-7.76.1-40.el9_8.9.aarch64.rpm
     repoid: ubi-9-for-aarch64-baseos-rpms
-    size: 293076
-    checksum: sha256:a7ec72530e41371da4984e19c93168de6a911067d2bb597dec1e3bbe48e179a8
+    size: 293172
+    checksum: sha256:bb072e4694bf1848ebf2270ba7df27b14a8dd4edd83dc72c53f44060206440ee
     name: libcurl
-    evr: 7.76.1-40.el9_8.8
-    sourcerpm: curl-7.76.1-40.el9_8.8.src.rpm
+    evr: 7.76.1-40.el9_8.9
+    sourcerpm: curl-7.76.1-40.el9_8.9.src.rpm
   - url: https://cdn-ubi.redhat.com/content/public/ubi/dist/ubi9/9/aarch64/baseos/os/Packages/l/libdb-5.3.28-57.el9_6.aarch64.rpm
     repoid: ubi-9-for-aarch64-baseos-rpms
     size: 727417
