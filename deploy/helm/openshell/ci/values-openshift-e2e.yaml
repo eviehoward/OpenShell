@@ -20,14 +20,11 @@
 # supplies `openshiftRoute.host` and `pkiInitJob.serverDnsNames[0]` via --set at
 # install time (both are the cluster-derived Route hostname).
 #
-# Security: this is NOT an open gateway. `server.tls.clientCaSecretName` defaults
-# to `openshell-server-client-ca` and there is no OIDC, so `require_client_auth`
-# is true and mTLS is MANDATORY at the TLS handshake — a caller with only the
-# Route URL and no client certificate is rejected before any RPC. The passthrough
-# Route terminates TLS at the gateway pod, so this holds end-to-end.
-# `allow_unauthenticated_users` only promotes the already cert-verified caller to a
-# dev principal at the app layer (mtls_auth is unsupported with the Kubernetes
-# driver). Both are required together; the client certificate is the access gate.
+# Security: this is NOT an open gateway. TLS client certificates are optional at
+# the transport layer so bearer-JWT sandbox clients can connect, but
+# `allow_unauthenticated_users` is false, so callers without a valid client
+# certificate are rejected by application auth before an RPC succeeds. The
+# passthrough Route terminates TLS at the gateway pod, so this holds end-to-end.
 gateway:
   image:
     pullPolicy: Always
@@ -37,7 +34,7 @@ server:
 
 gatewayConfig:
   openshell.gateway.auth:
-    allow_unauthenticated_users: true
+    allow_unauthenticated_users: false
   openshell.drivers.kubernetes:
     sandbox_runtime_image_pull_policy: always
     supervisor_image_pull_policy: always
