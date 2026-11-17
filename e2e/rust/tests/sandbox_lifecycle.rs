@@ -508,7 +508,13 @@ async fn canonical_main_exit_zero_completes_persistent_sandbox() {
     ]);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    let output = cmd.output().await.expect("spawn openshell sandbox create");
+    cmd.stdin(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn openshell sandbox create");
+    let _stdin_guard = child.stdin.take().expect("retain script stdin");
+    let output = child
+        .wait_with_output()
+        .await
+        .expect("wait for sandbox create");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let combined = normalize_output(&format!("{stdout}{stderr}"));
@@ -566,7 +572,13 @@ async fn canonical_main_nonzero_exit_preserves_status() {
     ]);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    let output = cmd.output().await.expect("spawn openshell sandbox create");
+    cmd.stdin(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn openshell sandbox create");
+    let _stdin_guard = child.stdin.take().expect("retain script stdin");
+    let output = child
+        .wait_with_output()
+        .await
+        .expect("wait for sandbox create");
     let combined = normalize_output(&format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
@@ -1015,7 +1027,13 @@ async fn sandbox_create_with_no_keep_cleans_up_after_tty_command() {
     ]);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    let output = cmd.output().await.expect("spawn openshell sandbox create");
+    cmd.stdin(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn openshell sandbox create");
+    let _stdin_guard = child.stdin.take().expect("retain script stdin");
+    let output = child
+        .wait_with_output()
+        .await
+        .expect("wait for sandbox create");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let combined = normalize_output(&format!("{stdout}{stderr}"));
@@ -1061,7 +1079,13 @@ async fn sandbox_create_with_no_keep_preserves_failure_then_cleans_up() {
     ]);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    let output = cmd.output().await.expect("spawn openshell sandbox create");
+    cmd.stdin(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn openshell sandbox create");
+    let _stdin_guard = child.stdin.take().expect("retain script stdin");
+    let output = child
+        .wait_with_output()
+        .await
+        .expect("wait for sandbox create");
     let combined = normalize_output(&format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
