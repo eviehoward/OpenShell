@@ -889,8 +889,8 @@ configure_fixture_container_engine() {
 }
 
 # OpenShift only: extract the client mTLS material, wait for the passthrough
-# Route to serve mTLS, assert that a certless caller is rejected at the TLS
-# handshake, and register an mTLS CLI gateway pointing at the Route.
+# Route to serve mTLS, assert that a certless caller is rejected by gateway
+# application auth, and register an mTLS CLI gateway pointing at the Route.
 #
 # Sets GATEWAY_NAME and GATEWAY_ENDPOINT on success. Returns non-zero on failure
 # (unreachable Route or a certless request that was NOT rejected — a security
@@ -930,33 +930,37 @@ openshift_register_route_gateway() {
     return 1
   fi
 
-  # Security gate: a caller with no client certificate MUST be rejected during
-  # the TLS handshake (clientCaSecretName set + no OIDC => mTLS mandatory).
-  #
-  # Validate the server cert with --cacert (no -k) and inspect curl's exit code
-  # so an unrelated TLS/DNS/timeout failure is not silently accepted as "certless
-  # rejected". Only a handshake abort by the server (no client cert presented)
-  # counts as the expected rejection.
+  # Security gate: a caller with no client certificate must be rejected by the
+  # gateway's application auth layer. The server intentionally allows
+  # certificate-less TLS clients so bearer-JWT sandbox clients can connect;
+  # therefore, probe a real authenticated RPC and require gRPC UNAUTHENTICATED.
+  local certless_headers="${pki_dir}/certless.headers"
+  local certless_status="${pki_dir}/certless.status"
   local certless_rc=0
-  curl -s --max-time 10 -o /dev/null \
+  printf '\0\0\0\0\0' | curl -sS --max-time 10 \
     --cacert "${pki_dir}/ca.crt" \
-    "https://${OPENSHIFT_ROUTE_HOST}/" || certless_rc=$?
-  case "${certless_rc}" in
-    0)
-      echo "ERROR: SECURITY HOLE — gateway accepted a certless request over the Route" >&2
-      return 1
-      ;;
-    35 | 56)
-      # 35 CURLE_SSL_CONNECT_ERROR / 56 CURLE_RECV_ERROR: the server aborted the
-      # TLS handshake because no client certificate was presented — the expected
-      # mTLS rejection.
-      echo "OK: Route reachable over mTLS; certless request rejected at TLS (curl ${certless_rc})."
-      ;;
-    *)
-      echo "ERROR: certless probe to ${OPENSHIFT_ROUTE_HOST} failed with curl exit ${certless_rc}, not a TLS client-auth rejection; cannot confirm mTLS is enforced" >&2
-      return 1
-      ;;
-  esac
+    --header 'content-type: application/grpc' \
+    --header 'te: trailers' \
+    --data-binary @- \
+    --output /dev/null \
+    --dump-header "${certless_headers}" \
+    --write-out '%{http_code}' \
+    "https://${OPENSHIFT_ROUTE_HOST}/openshell.v1.OpenShell/ListSandboxes" \
+    >"${certless_status}" || certless_rc=$?
+
+  local http_status grpc_status
+  http_status="$(cat "${certless_status}" 2>/dev/null || true)"
+  grpc_status="$(awk 'tolower($1) == "grpc-status:" { gsub("\r", "", $2); status = $2 } END { print status }' "${certless_headers}" 2>/dev/null || true)"
+
+  if [ "${certless_rc}" -ne 0 ]; then
+    echo "ERROR: certless probe to ${OPENSHIFT_ROUTE_HOST} failed with curl exit ${certless_rc}; cannot confirm authenticated RPCs are enforced" >&2
+    return 1
+  fi
+  if [ "${http_status}" != "200" ] || [ "${grpc_status}" != "16" ]; then
+    echo "ERROR: SECURITY HOLE — certless ListSandboxes RPC was not rejected (HTTP ${http_status:-unknown}, grpc-status ${grpc_status:-missing})" >&2
+    return 1
+  fi
+  echo "OK: Route reachable over mTLS; certless ListSandboxes RPC rejected by application auth."
 
   GATEWAY_NAME="openshell-e2e-openshift"
   GATEWAY_ENDPOINT="https://${OPENSHIFT_ROUTE_HOST}"
